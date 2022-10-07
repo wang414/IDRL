@@ -147,9 +147,6 @@ def maddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
     act_dim_sgl = 2 # for special env ant
-    """
-        for the task ant, we use a agent to control one leg
-    """
 
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
     act_limit = env.action_space.high[0]
@@ -266,7 +263,7 @@ def maddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if use_gpu:
             o = o.to(torch.device('cuda'))
         a = ac[idx].act(obs=o, use_gpu=use_gpu)
-        a += noise_scale * np.random.randn(act_dim_sgl)
+        a += noise_scale * (np.random.randn(act_dim_sgl) - 0.5)
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():

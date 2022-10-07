@@ -41,7 +41,6 @@ class MLPZFunction(nn.Module):
 
     def forward(self, obs, act):
         q = self.q(torch.cat([obs, act], dim=-1))
-        q = F.softmax(q, dim=-1)
         return torch.squeeze(q, -1) # Critical to ensure q has right shape.
 
 class MLPActorCritic(nn.Module):
@@ -57,6 +56,15 @@ class MLPActorCritic(nn.Module):
         # build policy and value functions
         self.pi = MLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q = MLPZFunction(obs_dim, act_dim, hidden_sizes, n_quantiles, activation)
+
+        """for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                # nn.init.orthogonal_(m.weight, gain = np.sqrt(2))
+                nn.init.xavier_normal_(m.weight)
+                nn.init.constant_(m.bias, 0.0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                nn.init.constant_(m.bias, 0.0)"""
 
     def act(self, obs, use_gpu):
         with torch.no_grad():
