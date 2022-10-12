@@ -1,3 +1,4 @@
+from asyncio.log import logger
 from cgi import test
 from copy import deepcopy
 import numpy as np
@@ -5,10 +6,14 @@ import torch
 from torch.optim import Adam
 import gym
 from gym.spaces.box import Box
-import time
 import core
-from logger import EpochLogger
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+
+from utils.logger import EpochLogger
 import warnings
+
 
 warnings.filterwarnings('ignore')
 
@@ -49,11 +54,11 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=5e-6, q_lr=5e-6, batch_size=100, start_steps=50000,
+          polyak=0.995, pi_lr=2e-4, q_lr=2e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200, target_ucb=False,
+          max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200,
           ucb=85, weight=0.5):
     """
     Deep Deterministic Policy Gradient (DDPG)
@@ -217,7 +222,7 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     
 
     # Set up function for computing DDPG Q-loss
-    def compute_loss_q(idx, data):
+    def compute_loss_z(idx, data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
         if use_gpu:
             o = o.to(torch.device('cuda'))
@@ -227,14 +232,14 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             d = d.to(torch.device('cuda'))
 
         # Calculate quantile values of current states and actions at taus.
-        current_sa_quantiles = ac[idx].q(o, a)
+        current_sa_quantiles = ac[idx].z(o, a)
         q = current_sa_quantiles.mean(dim=-1)
         current_sa_quantiles = current_sa_quantiles.unsqueeze(dim=-1)
         assert current_sa_quantiles.shape == (batch_size, N, 1)
 
         with torch.no_grad():
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = ac_targ[idx].q(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            next_sa_quantiles = ac_targ[idx].z(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
             assert next_sa_quantiles.shape == (batch_size, 1, N)
 
             # Calculate target quantile values.
@@ -254,37 +259,68 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logs = q.detach().numpy().mean()
         return quantile_huber_loss, logs
 
+    def compute_loss_q(idx, data):
+        o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
+
+        if use_gpu:
+            o = o.to(torch.device('cuda'))
+            a = a.to(torch.device('cuda'))
+            o2 = o2.to(torch.device('cuda'))
+            r = r.to(torch.device('cuda'))
+            d = d.to(torch.device('cuda'))
+
+        q = ac[idx].q(o,a)
+
+
+        # Bellman backup for Q function
+        with torch.no_grad():
+
+            q_pi_targ = ac_targ[idx].q(o2, ac_targ[idx].pi(o2))
+            backup = r + gamma * (1 - d) * q_pi_targ
+
+        # MSE loss against Bellman backup
+        loss_q = ((q - backup)**2).mean()
+
+        # Useful info for logging
+        if use_gpu:
+            logs = q.cpu().detach().numpy().mean()
+        else:
+            logs = q.detach().numpy().mean()
+
+        return loss_q, logs
 
     # Set up function for computing DDPG pi loss
+
     def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
-        q_pi = (ac[idx].q(o, ac[idx].pi(o))).mean(dim=-1)
-        return -q_pi.mean()
-
-    def compute_loss_pi_ucb(idx, data):
-        o = data['obs']
-        if use_gpu:
-            o = o.to(torch.device('cuda'))
-        q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).mean(-1) + \
-               weight * ac[idx].q(o, ac[idx].pi(o))[:,ucb*2]
+        q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).unsqueeze(dim=-1) + \
+               weight * ac[idx].z(o, ac[idx].pi(o))[:,ucb*2]
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
     pi_optimizers = []
     q_optimizers = []
+    z_optimizers = []
     for i in range(agent_num):
         pi_optimizers.append(Adam(ac[i].pi.parameters(), lr=pi_lr))
         q_optimizers.append(Adam(ac[i].q.parameters(), lr=q_lr))
+        z_optimizers.append(Adam(ac[i].z.parameters(), lr=z_lr))
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
     def update(idx, data):
+        # First run one gradient descent step for Z.
+        z_optimizers[idx].zero_grad()
+        loss_z, loss_info_z = compute_loss_z(idx, data)
+        loss_z.backward()
+        z_optimizers[idx].step()
+
         # First run one gradient descent step for Q.
         q_optimizers[idx].zero_grad()
-        loss_q, loss_info = compute_loss_q(idx, data)
+        loss_q, loss_info_q = compute_loss_q(idx, data)
         loss_q.backward()
         q_optimizers[idx].step()
 
@@ -292,18 +328,19 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         # computing gradients for it during the policy learning step.
         for p in ac[idx].q.parameters():
             p.requires_grad = False
+        for p in ac[idx].z.parameters():
+            p.requires_grad = False
 
         # Next run one gradient descent step for pi.
         pi_optimizers[idx].zero_grad()
-        if target_ucb:
-            loss_pi = compute_loss_pi_ucb(idx, data)
-        else:
-            loss_pi = compute_loss_pi(idx, data)
+        loss_pi = compute_loss_pi(idx, data)
         loss_pi.backward()
         pi_optimizers[idx].step()
 
         # Unfreeze Q-network so you can optimize it at next DDPG step.
         for p in ac[idx].q.parameters():
+            p.requires_grad = True
+        for p in ac[idx].z.parameters():
             p.requires_grad = True
 
 
@@ -314,7 +351,7 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_q.item(), loss_pi.item(), loss_info
+        return loss_q.item(), loss_z.item(), loss_pi.item(), loss_info_q, loss_info_z
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -347,7 +384,8 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts = env.reset()[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_q, loss_z, loss_pi, q_vals, z_vals, counts = \
+        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -395,10 +433,12 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lq, lp, qv = update(idx, data=batch)
-                    loss_q = lq
+                    lq, lz, lp, qv, zv= update(idx, data=batch)
+                    loss_q += lq
+                    loss_z += lz
                     loss_pi += lp
                     q_vals += qv
+                    z_vals += zv
                     counts += 1
 
         # End of epoch handling
@@ -410,7 +450,8 @@ def maqrdqn(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
 
             # Test the performance of the deterministic version of the agent.
-            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q_vals=q_vals/counts)
+            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Z = loss_z/counts,
+                loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
             test_agent()
 
             # Log info about epoch
@@ -427,17 +468,16 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--method4',action='store_true', default=False)
     parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bound in 100')
     parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
     args = parser.parse_args()
 
-    if args.method4:
-        exp_name='method4_ucb{}_weight{}'.format(args.ucb, args.weight)
-    else:
-        exp_name='maqrdqn'
+    exp_name='method4_ucb{}_weight{}'.format(args.ucb, args.weight)
 
-    maqrdqn(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
+    logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+
+
+    method4(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-          logger_dir='./logs', model_name=exp_name,  target_ucb=args.method4, ucb=args.ucb, weight=args.weight)
+          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight)
