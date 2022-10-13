@@ -10,15 +10,15 @@
     "actor_critic":	"MLPActorCritic",
     "batch_size":	100,
     "device":	"cuda",
-    "env_fn":	"<function <lambda> at 0x7f66fe942ef0>",
-    "epochs":	100,
+    "env_fn":	"<function <lambda> at 0x7f2c4250aef0>",
+    "epochs":	1000,
     "gamma":	0.99,
     "kappa":	1.0,
     "logger":	{
-        "<utils.logger.EpochLogger object at 0x7f66febfe7d0>":	{
+        "<utils.logger.EpochLogger object at 0x7f2c42504d10>":	{
             "epoch_dict":	{},
             "save_path":	"/home/yuxuan/codes/MADRL/method4/logs/method4_ucb85_weight0.5/run0",
-            "start_time":	1665587503.2123668
+            "start_time":	1665641519.4919624
         }
     },
     "logger_dir":	"/home/yuxuan/codes/MADRL/method4/logs",
