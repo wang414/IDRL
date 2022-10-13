@@ -5,9 +5,11 @@ import torch
 from torch.optim import Adam
 import gym
 from gym.spaces.box import Box
-import time
 import core
-from logger import EpochLogger
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from utils.logger import EpochLogger
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -49,7 +51,7 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def maddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
          steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
          polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
@@ -368,12 +370,12 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--exp_name', type=str, default='halfcheetah')
+    parser.add_argument('--exp_name', type=str, default='Halfcheetah')
     args = parser.parse_args()
 
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
-    maddpg(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
+    iddpg(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
          ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
          gamma=args.gamma, seed=args.seed, epochs=args.epochs,
          logger_dir=logger_dir, model_name=args.exp_name)
