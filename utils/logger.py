@@ -96,7 +96,7 @@ class EpochLogger:
             self.epoch_dict[k].append(v)
 
     def logging(self):
-        self.store(time=time()-self.start_time)
+        self.store(time=int(time()-self.start_time))
         for k,v in self.epoch_dict.items():
             print("{} = {}".format(k, v[-1]))
         print('-'*100)

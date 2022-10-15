@@ -1,5 +1,4 @@
 from copy import deepcopy
-import os
 import numpy as np
 import torch
 from torch.optim import Adam
@@ -55,7 +54,7 @@ def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
          steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
          polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
-         max_ep_len=1000, logger_kwargs=dict(), logger_dir='logs', model_name='maqrdqn', 
+         max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', 
          save_freq=1):
     """
     Deep Deterministic Policy Gradient (DDPG)
@@ -285,6 +284,7 @@ def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 ep_len += 1
             vals[j] = ep_ret
             lens[j] = ep_len
+            print(vals[j])
         logger.store(test_avg_r=vals.mean(), test_std_r=vals.std())
         logger.store(test_avg_len=lens.mean())
     # Prepare for interaction with environment
@@ -351,11 +351,13 @@ def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
             train_ret = np.array(ep_rets)
             ep_rets = []
+            logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
-            
-            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q=q_vals/counts)
-            # Test the performance of the deterministic version of the agent.
             test_agent()
+            logger.store(loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q=q_vals/counts)
+            # Test the performance of the deterministic version of the agent.
+            loss_q, loss_pi, q_vals, counts = 0, 0, 0, 0
+            
 
             # Log info about epoch
             logger.logging()

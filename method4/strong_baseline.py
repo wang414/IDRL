@@ -294,7 +294,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if use_gpu:
             o = o.to(torch.device('cuda'))
         q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).squeeze(dim=-1) + \
-               weight * ac[idx].z(o, ac[idx].pi(o))[:,ucb*2]
+               weight * ac[idx].z(o, ac[idx].pi(o)).mean(dim = -1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -468,7 +468,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bound in 100')
     parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
-    parser.add_argument('--exp_name', type=str, default='method4')
+    parser.add_argument('--exp_name', type=str, default='strong_baseline')
     args = parser.parse_args()
 
     exp_name= args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
