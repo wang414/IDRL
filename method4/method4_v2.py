@@ -293,8 +293,14 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
+        z = ac[idx].z(o, ac[idx].pi(o))
+        selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda')) *\
+             (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb).clip(0, 199)
+        qtls = torch.gather(z, 1, selected_idxs)
         q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).squeeze(dim=-1) + \
-               weight * ac[idx].z(o, ac[idx].pi(o)).mean(dim = -1)
+               weight * qtls.mean(dim=-1)
+        # print(q_pi)
+        # exit()
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -468,7 +474,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bound in 100')
     parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
-    parser.add_argument('--exp_name', type=str, default='strong_baseline')
+    parser.add_argument('--exp_name', type=str, default='method4_v2')
     args = parser.parse_args()
 
     exp_name= args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
