@@ -289,13 +289,15 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Set up function for computing DDPG pi loss
 
+    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
+           (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb).clip(0, 199)
+
     def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
         z = ac[idx].z(o, ac[idx].pi(o))
-        selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda')) *\
-             (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb).clip(0, 199)
+
         qtls = torch.gather(z, 1, selected_idxs)
         q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).squeeze(dim=-1) + \
                weight * qtls.mean(dim=-1)
