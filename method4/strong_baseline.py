@@ -54,7 +54,7 @@ class ReplayBuffer:
 
 def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=1e-4, batch_size=100, start_steps=50000,
+          polyak=0.995, pi_lr=2e-4, q_lr=2e-4, z_lr=1e-4, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
           max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200,
           ucb=85, weight=0.5):
