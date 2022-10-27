@@ -284,7 +284,7 @@ def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 ep_len += 1
             vals[j] = ep_ret
             lens[j] = ep_len
-            print(vals[j])
+            # print(vals[j])
         logger.store(test_avg_r=vals.mean(), test_std_r=vals.std())
         logger.store(test_avg_len=lens.mean())
     # Prepare for interaction with environment
