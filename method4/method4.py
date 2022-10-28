@@ -52,7 +52,7 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
           polyak=0.995, pi_lr=2e-4, q_lr=2e-4, z_lr=1e-4, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
@@ -151,6 +151,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn()
+    
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
      # for special env ant
@@ -159,11 +160,14 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
 
-    act_dim_sgl = action_space_single.shape[0]
+    if env_name == 'HalfCheetah-v4' or 'Walker2d-v4':
+        action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 2
+    
+    
     ac = []
-    agent_num = 2
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
         if use_gpu:
@@ -471,12 +475,12 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str, default='method4')
     args = parser.parse_args()
 
-    exp_name= args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
+    exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
 
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
 
-    method4(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
+    method4(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
           logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight)

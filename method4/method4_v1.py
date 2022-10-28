@@ -480,7 +480,7 @@ if __name__ == '__main__':
     parser.add_argument('--exp_name', type=str, default='method4_v1')
     args = parser.parse_args()
 
-    exp_name= args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
+    exp_name= args.env + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
 
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 

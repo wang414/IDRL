@@ -57,9 +57,9 @@ class EpochLogger:
         try_mkdir(self.save_path)
         self.epoch_dict = dict()
         self.start_time = time()
+        self.plot_object = ['test_avg_r']
+        self.x_name = 'Epoch'
     
-    def log_epoch(self):
-        pass
     def log_vars(self, vars=dict()):
         config_json = convert_json(vars)
         print(json.dumps(config_json, skipkeys=False ,separators=(',',':\t'), indent=4, sort_keys=True))
@@ -81,6 +81,11 @@ class EpochLogger:
             for idx, module in zip(range(len(model)), model):
                 torch.savetorch.save(self.save_model.state_dict(), join(self.save_path, 'model{}.pth'.format(idx)))
 
+    def set_plot_object(self, x_name, *kwargs):
+        self.x_name = x_name
+        self.plot_object = kwargs
+
+
     def store(self, **kwargs):
         """
         Save something into the epoch_logger's current state.
@@ -95,6 +100,14 @@ class EpochLogger:
                 self.epoch_dict[k] = []
             self.epoch_dict[k].append(v)
 
+    def plot(self):
+        plt.figure()
+        for k in self.plot_object:
+            plt.plot(self.epoch_dict[self.x_name], self.epoch_dict[k], label=k)
+        plt.legend()
+        plt.savefig(join(self.save_path, 'result'))
+        plt.close()
+
     def logging(self):
         self.store(time=int(time()-self.start_time))
         for k,v in self.epoch_dict.items():
@@ -102,3 +115,5 @@ class EpochLogger:
         print('-'*100)
         dt = pandas.DataFrame(self.epoch_dict)
         dt.to_csv(join(self.save_path, 'progress.csv'))
+        if len(self.plot_object) != 0:
+            self.plot()
