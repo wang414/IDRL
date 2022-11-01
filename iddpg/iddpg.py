@@ -50,7 +50,7 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
          steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
          polyak=0.995, pi_lr=2e-4, q_lr=2e-4, batch_size=100, start_steps=10000, 
          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
@@ -149,15 +149,17 @@ def iddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     env, test_env = env_fn(), env_fn()
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
-    act_dim_sgl = 3
 
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
     act_limit = env.action_space.high[0]
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    agent_num = 2
-    action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+    if env_name == 'HalfCheetah-v4' or 'Walker2d-v4':
+        action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 2
+
     ac = []
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, **ac_kwargs)
@@ -372,12 +374,13 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--exp_name', type=str, default='Halfcheetah')
+    parser.add_argument('--exp_name', type=str, default='iddpg')
     args = parser.parse_args()
 
+    exp_name= args.env + '_' + args.exp_name
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
-    iddpg(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
+    iddpg(lambda : gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
          ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
          gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-         logger_dir=logger_dir, model_name=args.exp_name)
+         logger_dir=logger_dir, model_name=exp_name)
