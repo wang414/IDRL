@@ -4,11 +4,10 @@ import torch
 from torch.optim import Adam
 import gym
 from gym.spaces.box import Box
-import core
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-
+from utils import core
 from utils.logger import EpochLogger
 import warnings
 

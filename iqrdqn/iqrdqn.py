@@ -4,10 +4,10 @@ import torch
 from torch.optim import Adam
 import gym
 from gym.spaces.box import Box
-import core
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+from utils import core
 from utils.logger import EpochLogger
 import warnings
 
@@ -52,9 +52,9 @@ class ReplayBuffer:
 
 def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=2e-4, q_lr=1e-4, batch_size=100, start_steps=50000,
+          polyak=0.995, pi_lr=2e-4, z_lr=1e-4, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200):
+          max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -180,8 +180,8 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
-    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q])
-    print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
+    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
+    print('\nNumber of parameters for each agent: \t pi: %d, \t z: %d\n'%var_counts)
 
     
     def calculate_huber_loss(td_errors, kappa=1.0):
@@ -220,7 +220,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     
 
     # Set up function for computing DDPG Q-loss
-    def compute_loss_q(idx, data):
+    def compute_loss_z(idx, data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
         if use_gpu:
             o = o.to(torch.device('cuda'))
@@ -230,14 +230,14 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             d = d.to(torch.device('cuda'))
 
         # Calculate quantile values of current states and actions at taus.
-        current_sa_quantiles = ac[idx].q(o, a)
+        current_sa_quantiles = ac[idx].z(o, a)
         q = current_sa_quantiles.mean(dim=-1)
         current_sa_quantiles = current_sa_quantiles.unsqueeze(dim=-1)
         assert current_sa_quantiles.shape == (batch_size, N, 1)
 
         with torch.no_grad():
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = ac_targ[idx].q(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            next_sa_quantiles = ac_targ[idx].z(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
             assert next_sa_quantiles.shape == (batch_size, 1, N)
 
             # Calculate target quantile values.
@@ -264,29 +264,29 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
-        q_pi = (ac[idx].q(o, ac[idx].pi(o))).mean(dim=-1)
+        q_pi = (ac[idx].z(o, ac[idx].pi(o))).mean(dim=-1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
     pi_optimizers = []
-    q_optimizers = []
+    z_optimizers = []
     for i in range(agent_num):
         pi_optimizers.append(Adam(ac[i].pi.parameters(), lr=pi_lr))
-        q_optimizers.append(Adam(ac[i].q.parameters(), lr=q_lr))
+        z_optimizers.append(Adam(ac[i].z.parameters(), lr=z_lr))
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
     def update(idx, data):
         # First run one gradient descent step for Q.
-        q_optimizers[idx].zero_grad()
-        loss_q, loss_info = compute_loss_q(idx, data)
-        loss_q.backward()
-        q_optimizers[idx].step()
+        z_optimizers[idx].zero_grad()
+        loss_z, loss_info = compute_loss_z(idx, data)
+        loss_z.backward()
+        z_optimizers[idx].step()
 
         # Freeze Q-network so you don't waste computational effort
         # computing gradients for it during the policy learning step.
-        for p in ac[idx].q.parameters():
+        for p in ac[idx].z.parameters():
             p.requires_grad = False
 
         # Next run one gradient descent step for pi.
@@ -296,7 +296,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         pi_optimizers[idx].step()
 
         # Unfreeze Q-network so you can optimize it at next DDPG step.
-        for p in ac[idx].q.parameters():
+        for p in ac[idx].z.parameters():
             p.requires_grad = True
 
 
@@ -307,7 +307,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_q.item(), loss_pi.item(), loss_info
+        return loss_z.item(), loss_pi.item(), loss_info
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -340,7 +340,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts = env.reset()[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = env.reset()[0], 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -388,10 +388,10 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lq, lp, qv = update(idx, data=batch)
-                    loss_q += lq
+                    lz, lp, zv = update(idx, data=batch)
+                    loss_z += lz
                     loss_pi += lp
-                    q_vals += qv
+                    z_vals += zv
                     counts += 1
 
         # End of epoch handling
@@ -404,10 +404,10 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q_vals=q_vals/counts)
+            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, Z_vals=z_vals/counts)
             
 
-            loss_q, loss_pi, q_vals, counts = \
+            loss_z, loss_pi, z_vals, counts = \
                 0, 0, 0, 0
 
 
