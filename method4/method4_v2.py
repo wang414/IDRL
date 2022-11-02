@@ -451,15 +451,17 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
             epoch = (t + 1) // steps_per_epoch
-
+            
             train_ret = np.array(ep_rets)
             ep_rets = []
+            logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
-
-            # Test the performance of the deterministic version of the agent.
-            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Z = loss_z/counts,
-                loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
             test_agent()
+            # Test the performance of the deterministic version of the agent.
+            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts,
+                loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
+            loss_q, loss_z, loss_pi, q_vals, z_vals, counts = \
+                0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()
