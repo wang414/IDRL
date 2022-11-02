@@ -340,9 +340,8 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    update(idx, data=batch)
                     lq, lp, qv = update(idx, data=batch)
-                    loss_q = lq
+                    loss_q += lq
                     loss_pi += lp
                     q_vals += qv
                     counts += 1

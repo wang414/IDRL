@@ -186,8 +186,8 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
-    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q])
-    print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
+    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q, ac[0].z])
+    print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d, \t z: %d\n'%var_counts)
 
     
     def calculate_huber_loss(td_errors, kappa=1.0):
@@ -259,6 +259,7 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             logs = q.cpu().detach().numpy().mean()
         else:
             logs = q.detach().numpy().mean()
+            
         return quantile_huber_loss, logs
 
     def compute_loss_q(idx, data):
@@ -288,6 +289,8 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             logs = q.cpu().detach().numpy().mean()
         else:
             logs = q.detach().numpy().mean()
+
+        # print(loss_q)
 
         return loss_q, logs
 
@@ -449,12 +452,14 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
             train_ret = np.array(ep_rets)
             ep_rets = []
+            logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
-
-            # Test the performance of the deterministic version of the agent.
-            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Z = loss_z/counts,
-                loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
             test_agent()
+            # Test the performance of the deterministic version of the agent.
+            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts,
+                loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
+            loss_q, loss_z, loss_pi, q_vals, z_vals, counts = \
+                0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()

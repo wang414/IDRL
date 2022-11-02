@@ -1,5 +1,3 @@
-from asyncio.log import logger
-from cgi import test
 from copy import deepcopy
 import numpy as np
 import torch
@@ -56,8 +54,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
           polyak=0.995, pi_lr=2e-4, q_lr=1e-4, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200, target_ucb=False,
-          ucb=85, weight=0.5):
+          max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -217,6 +214,8 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
         quantile_huber_loss = batch_quantile_huber_loss.mean()
 
+        
+
         return quantile_huber_loss
     
 
@@ -256,6 +255,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             logs = q.cpu().detach().numpy().mean()
         else:
             logs = q.detach().numpy().mean()
+        
         return quantile_huber_loss, logs
 
 
@@ -265,14 +265,6 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         if use_gpu:
             o = o.to(torch.device('cuda'))
         q_pi = (ac[idx].q(o, ac[idx].pi(o))).mean(dim=-1)
-        return -q_pi.mean()
-
-    def compute_loss_pi_ucb(idx, data):
-        o = data['obs']
-        if use_gpu:
-            o = o.to(torch.device('cuda'))
-        q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).mean(-1) + \
-               weight * ac[idx].q(o, ac[idx].pi(o))[:,ucb*2]
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -299,10 +291,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
         # Next run one gradient descent step for pi.
         pi_optimizers[idx].zero_grad()
-        if target_ucb:
-            loss_pi = compute_loss_pi_ucb(idx, data)
-        else:
-            loss_pi = compute_loss_pi(idx, data)
+        loss_pi = compute_loss_pi(idx, data)
         loss_pi.backward()
         pi_optimizers[idx].step()
 
@@ -400,7 +389,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
                     lq, lp, qv = update(idx, data=batch)
-                    loss_q = lq
+                    loss_q += lq
                     loss_pi += lp
                     q_vals += qv
                     counts += 1
@@ -411,11 +400,16 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
             train_ret = np.array(ep_rets)
             ep_rets = []
+            logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
-
-            # Test the performance of the deterministic version of the agent.
-            logger.store(Epoch=epoch, loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q_vals=q_vals/counts)
             test_agent()
+            # Test the performance of the deterministic version of the agent.
+            logger.store(loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q_vals=q_vals/counts)
+            
+
+            loss_q, loss_pi, q_vals, counts = \
+                0, 0, 0, 0
+
 
             # Log info about epoch
             logger.logging()
@@ -431,9 +425,6 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--method4',action='store_true', default=False, help='deprecated')
-    parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bound in 100')
-    parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
     parser.add_argument('--exp_name', type=str, default='iqrdqn')
     args = parser.parse_args()
 
@@ -443,4 +434,4 @@ if __name__ == '__main__':
     iqrdqn(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-          logger_dir=logger_dir, model_name=exp_name,  target_ucb=args.method4, ucb=args.ucb, weight=args.weight)
+          logger_dir=logger_dir, model_name=exp_name)
