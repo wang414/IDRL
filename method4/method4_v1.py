@@ -303,7 +303,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                weight * qtls.mean(dim=-1)
         # print(q_pi)
         # exit()
-        return -q_pi.mean()
+        return -q_pi.mean(), min_idx.cpu().numpy().mean()
 
     # Set up optimizers for policy and q-function
     pi_optimizers = []
@@ -339,7 +339,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # Next run one gradient descent step for pi.
         pi_optimizers[idx].zero_grad()
-        loss_pi = compute_loss_pi(idx, data)
+        loss_pi, mean_idx = compute_loss_pi(idx, data)
         loss_pi.backward()
         pi_optimizers[idx].step()
 
@@ -357,7 +357,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_q.item(), loss_z.item(), loss_pi.item(), loss_info_q, loss_info_z
+        return loss_q.item(), loss_z.item(), loss_pi.item(), loss_info_q, loss_info_z, mean_idx
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -390,8 +390,8 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_q, loss_z, loss_pi, q_vals, z_vals, counts = \
-        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi= \
+        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -439,12 +439,13 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lq, lz, lp, qv, zv= update(idx, data=batch)
+                    lq, lz, lp, qv, zv, mean_idx= update(idx, data=batch)
                     loss_q += lq
                     loss_z += lz
                     loss_pi += lp
                     q_vals += qv
                     z_vals += zv
+                    mi += mean_idx
                     counts += 1
 
         # End of epoch handling
@@ -457,10 +458,10 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts,
+            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts, mean_idx = mi/counts,
                 loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
-            loss_q, loss_z, loss_pi, q_vals, z_vals, counts = \
-                0, 0, 0, 0, 0, 0
+            loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi= \
+                0, 0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()
