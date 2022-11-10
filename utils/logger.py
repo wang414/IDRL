@@ -59,6 +59,7 @@ class EpochLogger:
         self.start_time = time()
         self.plot_object = ['test_avg_r']
         self.x_name = 'Epoch'
+        self.saver_model = None
     
     def log_vars(self, vars=dict()):
         config_json = convert_json(vars)
@@ -73,13 +74,15 @@ class EpochLogger:
                 assert isinstance(module, nn.Module)
         self.saver_model = model
 
-    def save_model(self, model):
-        assert isinstance(model, List) or isinstance(model, nn.Module)
-        if isinstance(model, nn.Module):
+    def save_model(self):
+        if self.saver_model == None:
+            return
+        assert isinstance(self.saver_model, List) or isinstance(self.saver_model, nn.Module)
+        if isinstance(self.saver_model, nn.Module):
             torch.save(self.save_model.state_dict(), join(self.save_path, 'model.pth'))
         else:
-            for idx, module in zip(range(len(model)), model):
-                torch.savetorch.save(self.save_model.state_dict(), join(self.save_path, 'model{}.pth'.format(idx)))
+            for idx, m in zip(range(len(self.saver_model)), self.saver_model):
+                torch.save(m.state_dict(), join(self.save_path, 'agent{}.pth'.format(idx)))
 
     def set_plot_object(self, x_name, *kwargs):
         self.x_name = x_name

@@ -177,6 +177,7 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             0, N+1, device=device, dtype=torch.float32) / N
     tau_hats = ((taus[1:] + taus[:-1]) / 2.0).view(1, N)
     ac_targ = deepcopy(ac)
+    logger.setup_pytorch_saver(ac)
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for agent in ac_targ:
         for p in agent.parameters():
