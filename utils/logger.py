@@ -117,3 +117,4 @@ class EpochLogger:
         dt.to_csv(join(self.save_path, 'progress.csv'))
         if len(self.plot_object) != 0:
             self.plot()
+        self.save_model()

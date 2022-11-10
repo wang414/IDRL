@@ -296,13 +296,8 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         mean_z = z.mean()
         abs_z = (z - mean_z).abs()
         min_idx = abs_z.argmax(dim=-1)
-        selected_idxs = min_idx.reshape(-1,1) + (torch.arange(4, device=torch.device('cuda')).reshape(1, -1) + 1)
-        selected_idxs.clip_(0, 199)
-        qtls = torch.gather(z, 1, selected_idxs)
         q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).squeeze(dim=-1) + \
-               weight * qtls.mean(dim=-1)
-        # print(q_pi)
-        # exit()
+               weight * ac[idx].z(o, ac[idx].pi(o))[:,ucb*2]
         return -q_pi.mean(), min_idx.cpu().numpy().mean()
 
     # Set up optimizers for policy and q-function
