@@ -52,9 +52,9 @@ class ReplayBuffer:
 
 def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
          steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
-         polyak=0.995, pi_lr=2e-4, q_lr=2e-4, batch_size=100, start_steps=10000, 
+         polyak=0.995, pi_lr=1e-4, q_lr=1e-4, batch_size=100, start_steps=10000, 
          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
-         max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', 
+         max_ep_len=1000, logger_dir='logs', model_name='iddpg', 
          save_freq=1):
     """
     Deep Deterministic Policy Gradient (DDPG)

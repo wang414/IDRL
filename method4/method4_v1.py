@@ -51,9 +51,9 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=2e-4, q_lr=2e-4, z_lr=1e-4, batch_size=100, start_steps=50000,
+          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
           max_ep_len=1000, logger_dir='logs', model_name='maqrdqn', save_freq=1, kappa=1.0, N=200,
           ucb=85, weight=0.5):
@@ -158,11 +158,13 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+    
+    if env_name == 'HalfCheetah-v4' or 'Walker2d-v4':
+        action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 2
 
-    act_dim_sgl = action_space_single.shape[0]
     ac = []
-    agent_num = 2
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
         if use_gpu:
@@ -173,6 +175,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             0, N+1, device=device, dtype=torch.float32) / N
     tau_hats = ((taus[1:] + taus[:-1]) / 2.0).view(1, N)
     ac_targ = deepcopy(ac)
+    logger.setup_pytorch_saver(ac)
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for agent in ac_targ:
         for p in agent.parameters():
@@ -293,12 +296,16 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if use_gpu:
             o = o.to(torch.device('cuda'))
         z = ac[idx].z(o, ac[idx].pi(o))
-        mean_z = z.mean()
+        mean_z = z.mean(dim=1).reshape(-1, 1)
         abs_z = (z - mean_z).abs()
-        min_idx = abs_z.argmax(dim=-1)
+        min_idx = abs_z.argmin(dim=-1).long().reshape(-1, 1)
+        #print('mean_z:\n', mean_z)
+        #print('min_idx:\n', min_idx)
+        #print('z[min_idx]:\n', z.gather(1, min_idx))
+        
         q_pi = (1-weight) * ac[idx].q(o,ac[idx].pi(o)).squeeze(dim=-1) + \
                weight * ac[idx].z(o, ac[idx].pi(o))[:,ucb*2]
-        return -q_pi.mean(), min_idx.cpu().numpy().mean()
+        return -q_pi.mean(), min_idx.cpu().numpy().mean(), z.detach().cpu().numpy().mean(axis=0)
 
     # Set up optimizers for policy and q-function
     pi_optimizers = []
@@ -334,7 +341,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
         # Next run one gradient descent step for pi.
         pi_optimizers[idx].zero_grad()
-        loss_pi, mean_idx = compute_loss_pi(idx, data)
+        loss_pi, mean_idx, z = compute_loss_pi(idx, data)
         loss_pi.backward()
         pi_optimizers[idx].step()
 
@@ -352,7 +359,7 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_q.item(), loss_z.item(), loss_pi.item(), loss_info_q, loss_info_z, mean_idx
+        return loss_q.item(), loss_z.item(), loss_pi.item(), loss_info_q, loss_info_z, mean_idx, z
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -385,8 +392,8 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi= \
-        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi, z= \
+        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -434,13 +441,14 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lq, lz, lp, qv, zv, mean_idx= update(idx, data=batch)
+                    lq, lz, lp, qv, zv, mean_idx ,z_= update(idx, data=batch)
                     loss_q += lq
                     loss_z += lz
                     loss_pi += lp
                     q_vals += qv
                     z_vals += zv
                     mi += mean_idx
+                    z += z_
                     counts += 1
 
         # End of epoch handling
@@ -453,10 +461,10 @@ def method4(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts, mean_idx = mi/counts,
+            logger.store(loss_Q = loss_q/counts, loss_Z = loss_z/counts, mean_idx = (int)(mi/counts), \
                 loss_Pi = loss_pi/counts, Q_vals=q_vals/counts, Z_vals = z_vals/counts)
-            loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi= \
-                0, 0, 0, 0, 0, 0, 0
+            loss_q, loss_z, loss_pi, q_vals, z_vals, counts, mi, z= \
+                0, 0, 0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()
@@ -482,7 +490,7 @@ if __name__ == '__main__':
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
 
-    method4(lambda: gym.make(args.env), actor_critic=core.MLPActorCritic,
+    method4(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
           logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight)
