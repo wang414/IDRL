@@ -11,6 +11,7 @@ from utils import core
 from utils.logger import EpochLogger
 import warnings
 
+
 warnings.filterwarnings('ignore')
 
 DEBUG = False
@@ -22,13 +23,14 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for DDPG agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size):
+    def __init__(self, obs_dim, act_dim, single_act_dim, size):
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
+        self.act_dim_sgl = single_act_dim
 
     def store(self, obs, act, rew, next_obs, done):
         self.obs_buf[self.ptr] = obs
@@ -40,7 +42,7 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.max_size)
 
     def sample_batch(self, idx, batch_size=32):
-        idx = np.array([idx*3, idx*3+1, idx*3 + 2])
+        idx = np.array([idx * self.act_dim_sgl + i for i in range(self.act_dim_sgl)])
         idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
@@ -50,11 +52,12 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
-          steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
+def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+          steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
+          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
           update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200):
+          max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200,
+          ucb=85, weight=0.5):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -156,12 +159,17 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    if env_name == 'HalfCheetah-v4' or 'Walker2d-v4':
+
+    if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
         action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
-
+    elif env_name == 'Ant-v4':
+        action_space_single = Box(low=-1, high=1, shape=[2,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 4
     ac = []
+
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
         if use_gpu:
@@ -177,11 +185,11 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         for p in agent.parameters():
             p.requires_grad = False
     # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
+    replay_buffer = ReplayBuffer(obs_dim, act_dim, act_dim_sgl, replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
-    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
-    print('\nNumber of parameters for each agent: \t pi: %d, \t z: %d\n'%var_counts)
+    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q])
+    print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
 
     
     def calculate_huber_loss(td_errors, kappa=1.0):
@@ -213,8 +221,6 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         assert batch_quantile_huber_loss.shape == (batch_size, 1)
 
         quantile_huber_loss = batch_quantile_huber_loss.mean()
-
-        
 
         return quantile_huber_loss
     
@@ -255,16 +261,20 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             logs = q.cpu().detach().numpy().mean()
         else:
             logs = q.detach().numpy().mean()
-        
         return quantile_huber_loss, logs
 
+    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
+           (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb).clip(0, 199)
 
-    # Set up function for computing DDPG pi loss
+
     def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
-        q_pi = (ac[idx].z(o, ac[idx].pi(o))).mean(dim=-1)
+        z = ac[idx].z(o, ac[idx].pi(o))
+        qtls = torch.gather(z, 1, selected_idxs)
+        q_pi = (1-weight) * ac[idx].z(o, ac[idx].pi(o)).mean(dim=-1) + \
+               weight * qtls.mean(dim=-1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -277,13 +287,23 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
-    def update(idx, data):
-        # First run one gradient descent step for Q.
+    def update_z(idx, data):
+        # First run one gradient descent step for Z.
         z_optimizers[idx].zero_grad()
-        loss_z, loss_info = compute_loss_z(idx, data)
+        loss_z, loss_info_z = compute_loss_z(idx, data)
         loss_z.backward()
         z_optimizers[idx].step()
 
+        # Finally, update target networks by polyak averaging.
+        with torch.no_grad():
+            for p, p_targ in zip(ac[idx].parameters(), ac_targ[idx].parameters()):
+                # NB: We use an in-place operations "mul_", "add_" to update target
+                # params, as opposed to "mul" and "add", which would make new tensors.
+                p_targ.data.mul_(polyak)
+                p_targ.data.add_((1 - polyak) * p.data)
+        return loss_z.item(), loss_info_z
+
+    def update_pi(idx, data):
         # Freeze Q-network so you don't waste computational effort
         # computing gradients for it during the policy learning step.
         for p in ac[idx].z.parameters():
@@ -299,15 +319,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         for p in ac[idx].z.parameters():
             p.requires_grad = True
 
-
-        # Finally, update target networks by polyak averaging.
-        with torch.no_grad():
-            for p, p_targ in zip(ac[idx].parameters(), ac_targ[idx].parameters()):
-                # NB: We use an in-place operations "mul_", "add_" to update target
-                # params, as opposed to "mul" and "add", which would make new tensors.
-                p_targ.data.mul_(polyak)
-                p_targ.data.add_((1 - polyak) * p.data)
-        return loss_z.item(), loss_pi.item(), loss_info
+        return loss_pi.item()
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -340,7 +352,8 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = env.reset()[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = \
+        env.reset()[0], 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -388,11 +401,15 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lz, lp, zv = update(idx, data=batch)
+                    lz, zv= update_z(idx, data=batch)
                     loss_z += lz
-                    loss_pi += lp
                     z_vals += zv
                     counts += 1
+            for _ in range(update_every):
+                for idx in range(agent_num):
+                    batch = replay_buffer.sample_batch(idx, batch_size)
+                    lp = update_pi(idx, data=batch)
+                    loss_pi += lp
 
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
@@ -404,12 +421,10 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, Z_vals=z_vals/counts)
-            
-
+            logger.store(loss_Z = loss_z/counts,
+                loss_Pi = loss_pi/counts, Z_vals = z_vals/counts)
             loss_z, loss_pi, z_vals, counts = \
                 0, 0, 0, 0
-
 
             # Log info about epoch
             logger.logging()
@@ -424,15 +439,19 @@ if __name__ == '__main__':
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
-    parser.add_argument('--epochs', type=int, default=100)
-    parser.add_argument('--exp_name', type=str, default='iqrdqn')
+    parser.add_argument('--epochs', type=int, default=1500)
+    parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
+    parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
+    parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
     parser.add_argument('--z_lr', type=float, default=5e-5)
     args = parser.parse_args()
 
-    exp_name= args.env + '_' + args.exp_name
+    exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
+
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
-    iqrdqn(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
+
+    method5(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-          logger_dir=logger_dir, model_name=exp_name, z_lr=args.z_lr)
+          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight, z_lr=args.z_lr)

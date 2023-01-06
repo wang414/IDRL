@@ -374,6 +374,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', '-s', type=int, default=0)
     parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--exp_name', type=str, default='iddpg')
+    parser.add_argument('--q_lr', type=float, default=1e-4)
     args = parser.parse_args()
 
     exp_name= args.env + '_' + args.exp_name
@@ -382,4 +383,4 @@ if __name__ == '__main__':
     iddpg(lambda : gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
          ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
          gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-         logger_dir=logger_dir, model_name=exp_name)
+         logger_dir=logger_dir, model_name=exp_name, q_lr=args.q_lr)
