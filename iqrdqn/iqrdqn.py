@@ -22,13 +22,14 @@ class ReplayBuffer:
     A simple FIFO experience replay buffer for DDPG agents.
     """
 
-    def __init__(self, obs_dim, act_dim, size):
+    def __init__(self, obs_dim, act_dim, single_act_dim, size):
         self.obs_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.obs2_buf = np.zeros(core.combined_shape(size, obs_dim), dtype=np.float32)
         self.act_buf = np.zeros(core.combined_shape(size, act_dim), dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.ptr, self.size, self.max_size = 0, 0, size
+        self.act_dim_sgl = single_act_dim
 
     def store(self, obs, act, rew, next_obs, done):
         self.obs_buf[self.ptr] = obs
@@ -40,7 +41,7 @@ class ReplayBuffer:
         self.size = min(self.size + 1, self.max_size)
 
     def sample_batch(self, idx, batch_size=32):
-        idx = np.array([idx*3, idx*3+1, idx*3 + 2])
+        idx = np.array([idx * self.act_dim_sgl + i for i in range(self.act_dim_sgl)])
         idxs = np.random.randint(0, self.size, size=batch_size)
         batch = dict(obs=self.obs_buf[idxs],
                      obs2=self.obs2_buf[idxs],
@@ -156,10 +157,14 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    if env_name == 'HalfCheetah-v4' or 'Walker2d-v4':
+    if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
         action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
+    elif env_name == 'Ant-v4':
+        action_space_single = Box(low=-1, high=1, shape=[2,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 4
 
     ac = []
     for _ in range(agent_num):
@@ -177,8 +182,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         for p in agent.parameters():
             p.requires_grad = False
     # Experience buffer
-    replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
-
+    replay_buffer = ReplayBuffer(obs_dim, act_dim, act_dim_sgl, replay_size)
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
     print('\nNumber of parameters for each agent: \t pi: %d, \t z: %d\n'%var_counts)
