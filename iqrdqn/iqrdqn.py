@@ -162,9 +162,9 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
     elif env_name == 'Ant-v4':
-        action_space_single = Box(low=-1, high=1, shape=[2,], dtype=np.float32)
+        action_space_single = Box(low=-1, high=1, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
-        agent_num = 4
+        agent_num = 2
 
     ac = []
     for _ in range(agent_num):
@@ -318,7 +318,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         if use_gpu:
             o = o.to(torch.device('cuda'))
         a = ac[idx].act(obs=o, use_gpu=use_gpu)
-        a += noise_scale * (np.random.randn(act_dim_sgl) - 0.5)
+        a += noise_scale * np.random.randn(act_dim_sgl)
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():

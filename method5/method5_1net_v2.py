@@ -54,9 +54,9 @@ class ReplayBuffer:
 
 def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
-          update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200,
+          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
+          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
+          max_ep_len=1000, logger_dir='logs', model_name='method5', save_freq=1, kappa=1.0, N=200,
           ucb=85, weight=0.5):
     """
     Deep Deterministic Policy Gradient (DDPG)
@@ -165,9 +165,9 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
     elif env_name == 'Ant-v4':
-        action_space_single = Box(low=-1, high=1, shape=[2,], dtype=np.float32)
+        action_space_single = Box(low=-1, high=1, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
-        agent_num = 4
+        agent_num = 2
     ac = []
 
     for _ in range(agent_num):
@@ -326,7 +326,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         if use_gpu:
             o = o.to(torch.device('cuda'))
         a = ac[idx].act(obs=o, use_gpu=use_gpu)
-        a += noise_scale * (np.random.randn(act_dim_sgl) - 0.5)
+        a += noise_scale * np.random.randn(act_dim_sgl)
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():
