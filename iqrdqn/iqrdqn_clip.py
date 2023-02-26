@@ -9,9 +9,8 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from utils import core
 from utils.logger import EpochLogger
-from utils.norm_check import get_inf_norm
 import warnings
-
+from utils.norm_check import get_inf_norm
 
 warnings.filterwarnings('ignore')
 
@@ -53,12 +52,11 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
-          steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-3, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
-          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
-          max_ep_len=1000, logger_dir='logs', model_name='method5', save_freq=1, kappa=1.0, N=200,
-          ucb=85, weight=0.5):
+def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+          steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
+          polyak=0.995, pi_lr=1e-3, z_lr=1e-3, batch_size=100, start_steps=50000,
+          update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
+          max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -160,7 +158,6 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-
     if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
         action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
@@ -169,8 +166,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         action_space_single = Box(low=-1, high=1, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
-    ac = []
 
+    ac = []
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
         if use_gpu:
@@ -187,10 +184,9 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             p.requires_grad = False
     # Experience buffer
     replay_buffer = ReplayBuffer(obs_dim, act_dim, act_dim_sgl, replay_size)
-
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
-    print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
+    print('\nNumber of parameters for each agent: \t pi: %d, \t z: %d\n'%var_counts)
 
     
     def calculate_huber_loss(td_errors, kappa=1.0):
@@ -223,6 +219,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
         quantile_huber_loss = batch_quantile_huber_loss.mean()
 
+        
+
         return quantile_huber_loss
     
 
@@ -244,7 +242,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
         with torch.no_grad():
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = ac_targ[idx].z(o2, ac[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            next_sa_quantiles = ac_targ[idx].z(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
             assert next_sa_quantiles.shape == (batch_size, 1, N)
 
             # Calculate target quantile values.
@@ -262,19 +260,16 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             logs = q.cpu().detach().numpy().mean()
         else:
             logs = q.detach().numpy().mean()
+        
         return quantile_huber_loss, logs
 
-    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
-           (torch.arange(9, device=torch.device('cuda')).reshape(1, -1) + -4 + ucb*2).clip(0, 199)
 
-
+    # Set up function for computing DDPG pi loss
     def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
-        z = ac[idx].z(o, ac[idx].pi(o))
-        qtls = torch.gather(z, 1, selected_idxs)
-        q_pi = (1-weight) * z.mean(dim=-1) + weight * qtls.mean(dim=-1)
+        q_pi = (ac[idx].z(o, ac[idx].pi(o))).mean(dim=-1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -287,25 +282,15 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
-    def update_z(idx, data):
-        # First run one gradient descent step for Z.
+    def update(idx, data):
+        # First run one gradient descent step for Q.
         z_optimizers[idx].zero_grad()
-        loss_z, loss_info_z = compute_loss_z(idx, data)
+        loss_z, loss_info = compute_loss_z(idx, data)
         loss_z.backward()
         z_grad_norm = get_inf_norm(ac[idx].z.parameters())
         torch.nn.utils.clip_grad_norm_(ac[idx].z.parameters(), max_norm=20.0, norm_type=2)
         z_optimizers[idx].step()
 
-        # Finally, update target networks by polyak averaging.
-        with torch.no_grad():
-            for p, p_targ in zip(ac[idx].parameters(), ac_targ[idx].parameters()):
-                # NB: We use an in-place operations "mul_", "add_" to update target
-                # params, as opposed to "mul" and "add", which would make new tensors.
-                p_targ.data.mul_(polyak)
-                p_targ.data.add_((1 - polyak) * p.data)
-        return loss_z.item(), loss_info_z, z_grad_norm
-
-    def update_pi(idx, data):
         # Freeze Q-network so you don't waste computational effort
         # computing gradients for it during the policy learning step.
         for p in ac[idx].z.parameters():
@@ -322,7 +307,15 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         for p in ac[idx].z.parameters():
             p.requires_grad = True
 
-        return loss_pi.item(), pi_grad_norm
+
+        # Finally, update target networks by polyak averaging.
+        with torch.no_grad():
+            for p, p_targ in zip(ac[idx].parameters(), ac_targ[idx].parameters()):
+                # NB: We use an in-place operations "mul_", "add_" to update target
+                # params, as opposed to "mul" and "add", which would make new tensors.
+                p_targ.data.mul_(polyak)
+                p_targ.data.add_((1 - polyak) * p.data)
+        return loss_z.item(), loss_pi.item(), loss_info, z_grad_norm, pi_grad_norm
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -355,8 +348,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
-        env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = env.reset()[0], 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -404,32 +396,27 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lz, zv, zgn= update_z(idx, data=batch)
-                    #print(zgn)
+                    lz, lp, zv, zgn, pgn = update(idx, data=batch)
                     loss_z += lz
+                    loss_pi += lp
                     z_vals += zv
                     z_grad += zgn
+                    pi_grad += pgn
                     counts += 1
-            for _ in range(update_every):
-                for idx in range(agent_num):
-                    batch = replay_buffer.sample_batch(idx, batch_size)
-                    lp , pig= update_pi(idx, data=batch)
-                    loss_pi += lp
-                    pi_grad += pig
 
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
             epoch = (t + 1) // steps_per_epoch
+
             train_ret = np.array(ep_rets)
             ep_rets = []
             logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, 
-            Z_vals = z_vals/counts, z_grad_norm = z_grad/counts, pi_grad_norm=pi_grad/counts)
-            loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
-                0, 0, 0, 0, 0, 0
+            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, Z_vals=z_vals/counts, z_grad_norm = z_grad/counts, pi_grad_norm=pi_grad/counts)
+            
+            loss_z, loss_pi, z_vals, counts, pi_grad, z_grad = 0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()
@@ -444,19 +431,15 @@ if __name__ == '__main__':
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
-    parser.add_argument('--epochs', type=int, default=1500)
-    parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
-    parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
-    parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--exp_name', type=str, default='iqrdqn_clp_grad')
     parser.add_argument('--z_lr', type=float, default=1e-3)
     args = parser.parse_args()
 
-    exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
-
+    exp_name= args.env + '_' + args.exp_name
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
-
-    method5(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
+    iqrdqn(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight, z_lr=args.z_lr)
+          logger_dir=logger_dir, model_name=exp_name, z_lr=args.z_lr)
