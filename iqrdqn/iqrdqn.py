@@ -241,7 +241,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
         with torch.no_grad():
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = ac_targ[idx].z(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            next_sa_quantiles = ac_targ[idx].z(o2, ac[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
             assert next_sa_quantiles.shape == (batch_size, 1, N)
 
             # Calculate target quantile values.
