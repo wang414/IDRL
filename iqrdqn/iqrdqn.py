@@ -145,10 +145,12 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     logger = EpochLogger(logger_dir, model_name)
     logger.log_vars(locals())
 
+    
     torch.manual_seed(seed)
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn()
+    env.action_space.seed(seed)
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
      # for special env ant
@@ -344,7 +346,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = env.reset()[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0
     ep_rets = []
 
     # Main loop: collect experience in env and update/log each epoch
@@ -364,7 +366,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
         # Step the env
         o2, r, d, _, info = env.step(a)
         if DEBUG:
-            print("o:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, o2, r, d, info))
+            print("o:\n{}\na:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, a, o2, r, d, info))
         ep_len += 1
         ep_ret += r
 
@@ -385,6 +387,7 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             # logger.store(EpRet=ep_ret, EpLen=ep_len)
             ep_rets.append(ep_ret)
             o, ep_ret, ep_len = env.reset()[0], 0, 0
+            print(o)
             
 
         # Update handling

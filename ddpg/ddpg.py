@@ -139,7 +139,8 @@ def ddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env, test_env = env_fn(), env_fn()
+    env, test_env = env_fn(), env_fn() 
+    env.action_space.seed(seed)
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
 
@@ -267,7 +268,7 @@ def ddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     total_steps = steps_per_epoch * epochs
     start_time = time.time()
     # print(env.reset())
-    o, ep_ret, ep_len = env.reset()[0], 0, 0
+    o, ep_ret, ep_len =  env.reset(seed=seed)[0], 0, 0
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
         
