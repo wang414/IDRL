@@ -152,7 +152,6 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn() 
-    env.action_space.seed(seed)
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
      # for special env ant
@@ -372,7 +371,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 a.append(get_action(idx, o, act_noise))
             a = np.concatenate(a, axis=-1)
         else:
-            a = env.action_space.sample()
+            a = np.clip(np.random.rand(act_dim), -act_limit, act_limit)
+            #print(a.shape)
 
         # Step the env
         o2, r, d, _, info = env.step(a)

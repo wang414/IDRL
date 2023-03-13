@@ -137,7 +137,7 @@ def ddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn() 
-    env.action_space.seed(seed)
+    
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
 
@@ -252,7 +252,7 @@ def ddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if t > start_steps:
             a = get_action(o, act_noise)
         else:
-            a = env.action_space.sample()
+            a = np.clip(np.random.rand(act_dim), -act_limit, act_limit)
 
         # Step the env
         # print(env.step(a))

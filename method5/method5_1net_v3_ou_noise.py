@@ -9,6 +9,8 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
 from utils import core
 from utils.logger import EpochLogger
+from utils.norm_check import get_inf_norm
+from utils.ounoise import OUNoise
 import warnings
 
 
@@ -53,11 +55,11 @@ class ReplayBuffer:
 
 
 def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
-          steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-4, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
+          steps_per_epoch=4000, epochs=1000, replay_size=int(1e6), gamma=0.99,
+          polyak=0.995, pi_lr=1e-3, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
           update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
           max_ep_len=1000, logger_dir='logs', model_name='method5', save_freq=1, kappa=1.0, N=200,
-          ucb=80, weight=0.5):
+          ucb=85, weight=0.5):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -151,7 +153,6 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn() 
-    env.action_space.seed(seed)
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
      # for special env ant
@@ -170,12 +171,15 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
     ac = []
+    ou_noises = []
 
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
+        ou_n = OUNoise(act_dim_sgl)
         if use_gpu:
             agent.cuda()
         ac.append(agent)
+        ou_noises.append(ou_n)
     ac_targ = deepcopy(ac)
     taus = torch.arange(
             0, N+1, device=device, dtype=torch.float32) / N
@@ -189,7 +193,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     replay_buffer = ReplayBuffer(obs_dim, act_dim, act_dim_sgl, replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
-    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q])
+    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
     print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
 
     
@@ -244,7 +248,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
         with torch.no_grad():
             # Calculate quantile values of next states and actions at tau_hats.
-            next_sa_quantiles = ac_targ[idx].z(o2, ac_targ[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            next_sa_quantiles = ac_targ[idx].z(o2, ac[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
             assert next_sa_quantiles.shape == (batch_size, 1, N)
 
             # Calculate target quantile values.
@@ -264,17 +268,17 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             logs = q.detach().numpy().mean()
         return quantile_huber_loss, logs
 
-    
+    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
+           (torch.arange(9, device=torch.device('cuda')).reshape(1, -1) + -4 + ucb*2).clip(0, 199)
 
 
-    def compute_loss_pi(idx, data, selected_idxs):
+    def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
         z = ac[idx].z(o, ac[idx].pi(o))
         qtls = torch.gather(z, 1, selected_idxs)
-        q_pi = (1-weight) * ac[idx].z(o, ac[idx].pi(o)).mean(dim=-1) + \
-               weight * qtls.mean(dim=-1)
+        q_pi = (1-weight) * z.mean(dim=-1) + weight * qtls.mean(dim=-1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
@@ -292,6 +296,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         z_optimizers[idx].zero_grad()
         loss_z, loss_info_z = compute_loss_z(idx, data)
         loss_z.backward()
+        z_grad_norm = get_inf_norm(ac[idx].z.parameters())
+        torch.nn.utils.clip_grad_norm_(ac[idx].z.parameters(), max_norm=20.0, norm_type=2)
         z_optimizers[idx].step()
 
         # Finally, update target networks by polyak averaging.
@@ -301,9 +307,9 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_z.item(), loss_info_z
+        return loss_z.item(), loss_info_z, z_grad_norm
 
-    def update_pi(idx, data, selected_idxs):
+    def update_pi(idx, data):
         # Freeze Q-network so you don't waste computational effort
         # computing gradients for it during the policy learning step.
         for p in ac[idx].z.parameters():
@@ -311,22 +317,23 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
         # Next run one gradient descent step for pi.
         pi_optimizers[idx].zero_grad()
-        loss_pi = compute_loss_pi(idx, data, selected_idxs)
+        loss_pi = compute_loss_pi(idx, data)
         loss_pi.backward()
+        pi_grad_norm = get_inf_norm(ac[idx].pi.parameters())
         pi_optimizers[idx].step()
 
         # Unfreeze Q-network so you can optimize it at next DDPG step.
         for p in ac[idx].z.parameters():
             p.requires_grad = True
 
-        return loss_pi.item()
+        return loss_pi.item(), pi_grad_norm
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
         if use_gpu:
             o = o.to(torch.device('cuda'))
         a = ac[idx].act(obs=o, use_gpu=use_gpu)
-        a += noise_scale * np.random.randn(act_dim_sgl)
+        a += ou_noises[idx].noise()
         return np.clip(a, -act_limit, act_limit)
 
     def test_agent():
@@ -352,13 +359,9 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
     # print(env.reset())
-    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts = \
-         env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
+         env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
-
-
-    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
-           (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb).clip(0, 199)
 
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
@@ -372,7 +375,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 a.append(get_action(idx, o, act_noise))
             a = np.concatenate(a, axis=-1)
         else:
-            a = env.action_space.sample()
+            a = np.clip(np.random.rand(act_dim), -act_limit, act_limit)
+            #print(a.shape)
 
         # Step the env
         o2, r, d, _, info = env.step(a)
@@ -400,40 +404,38 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             o, ep_ret, ep_len = env.reset()[0], 0, 0
             
 
-        
-
         # Update handling
         if t >= update_after and t % update_every == 0:
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lz, zv= update_z(idx, data=batch)
+                    lz, zv, zgn= update_z(idx, data=batch)
+                    #print(zgn)
                     loss_z += lz
                     z_vals += zv
+                    z_grad += zgn
                     counts += 1
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lp = update_pi(idx, data=batch, selected_idxs=selected_idxs)
+                    lp , pig= update_pi(idx, data=batch)
                     loss_pi += lp
+                    pi_grad += pig
 
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
             epoch = (t + 1) // steps_per_epoch
-
             train_ret = np.array(ep_rets)
             ep_rets = []
             logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
             # Test the performance of the deterministic version of the agent.
-            logger.store(loss_Z = loss_z/counts,
-                loss_Pi = loss_pi/counts, Z_vals = z_vals/counts)
-            loss_z, loss_pi, z_vals, counts = \
-                0, 0, 0, 0
+            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, 
+            Z_vals = z_vals/counts, z_grad_norm = z_grad/counts, pi_grad_norm=pi_grad/counts)
+            loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
+                0, 0, 0, 0, 0, 0
 
-            selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
-            (torch.arange(5, device=torch.device('cuda')).reshape(1, -1) + -3 + ucb ).clip(0, 199)
             # Log info about epoch
             logger.logging()
 
@@ -451,7 +453,7 @@ if __name__ == '__main__':
     parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
     parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
     parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
-    parser.add_argument('--z_lr', type=float, default=5e-5)
+    parser.add_argument('--z_lr', type=float, default=1e-3)
     args = parser.parse_args()
 
     exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
