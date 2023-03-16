@@ -439,7 +439,7 @@ if __name__ == '__main__':
     parser.add_argument('--z_lr', type=float, default=5e-5)
     args = parser.parse_args()
 
-    exp_name= args.env + '_' + args.exp_name
+    exp_name= args.env + '_ou_' + args.exp_name
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
     iqrdqn(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,

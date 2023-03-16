@@ -454,9 +454,10 @@ if __name__ == '__main__':
     parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
     parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
     parser.add_argument('--z_lr', type=float, default=1e-3)
+    parser.add_argument('--pi_lr', type=float, default=1e-3)
     args = parser.parse_args()
 
-    exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
+    exp_name= args.env + '_' + args.exp_name + 'ou_ucb{}_weight{}'.format(args.ucb, args.weight)
 
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
@@ -464,4 +465,4 @@ if __name__ == '__main__':
     method5(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
           ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
           gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight, z_lr=args.z_lr)
+          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight=args.weight, z_lr=args.z_lr, pi_lr=args.pi_lr)
