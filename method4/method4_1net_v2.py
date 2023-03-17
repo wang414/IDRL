@@ -364,7 +364,7 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 a.append(get_action(idx, o, act_noise))
             a = np.concatenate(a, axis=-1)
         else:
-            a = np.clip(np.random.rand(act_dim), -act_limit, act_limit)
+            a = np.random.uniform(-act_limit, act_limit, act_dim)
 
         # Step the env
         o2, r, d, _, info = env.step(a)

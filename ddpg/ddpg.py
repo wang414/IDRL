@@ -278,7 +278,7 @@ def ddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
         if t > start_steps:
             a = get_action(o, act_noise)
         else:
-            a = np.clip(np.random.rand(act_dim), -act_limit, act_limit)
+            a = np.random.uniform(-act_limit, act_limit, act_dim)
 
         # Step the env
         o2, r, d, _, info = env.step(a)
