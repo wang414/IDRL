@@ -358,7 +358,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
          env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
-
+    test_env.reset(seed=np.random.randint(100))
+    test_env.reset(seed=np.random.randint(100))
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
 
@@ -377,7 +378,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         # Step the env
         o2, r, d, _, info = env.step(a)
         if DEBUG:
-            print("o:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, o2, r, d, info))
+            print("o:\n{}\na:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, a, o2, r, d, info))
         ep_len += 1
         ep_ret += r
 

@@ -301,6 +301,7 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
     # print(env.reset())
     o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts =  env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0
     ep_rets = []
+    test_env.reset(seed=np.random.randint(100))
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
         
