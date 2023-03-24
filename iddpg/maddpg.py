@@ -48,7 +48,7 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def maddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+def maddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
          steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
          polyak=0.995, pi_lr=1e-3, q_lr=1e-3, batch_size=100, start_steps=10000, 
          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
@@ -154,8 +154,18 @@ def maddpg(env_fn, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    agent_num = 2
-    action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+    if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[3,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 2
+    elif env_name == 'Ant-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[4,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 2
+    elif env_name == 'Humanoid-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 17
     ac = []
     for _ in range(agent_num):
         agent = actor_critic(env.observation_space, action_space_single, **ac_kwargs)
@@ -374,7 +384,7 @@ if __name__ == '__main__':
     from spinup.utils.run_utils import setup_logger_kwargs
     logger_kwargs = setup_logger_kwargs(args.exp_name, args.seed, './logs')
 
-    maddpg(lambda : gym.make(args.env), actor_critic=core.MLPActorCritic,
+    maddpg(lambda : gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
          ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
          gamma=args.gamma, seed=args.seed, epochs=args.epochs,
          logger_kwargs=logger_kwargs)

@@ -163,13 +163,17 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
 
     if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
-        action_space_single = Box(low=-1, high=1, shape=[3,], dtype=np.float32)
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
     elif env_name == 'Ant-v4':
-        action_space_single = Box(low=-1, high=1, shape=[4,], dtype=np.float32)
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
+    elif env_name == 'Humanoid-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 17
     ac = []
     ou_noises = []
 
