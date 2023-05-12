@@ -53,8 +53,8 @@ class ReplayBuffer:
 
 def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=50000,
-          update_after=2000, update_every=100, act_noise=0.1, num_test_episodes=10,
+          polyak=0.995, pi_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
+          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
           max_ep_len=1000, logger_dir='logs', model_name='iqrdqn', save_freq=1, kappa=1.0, N=200):
     """
     Deep Deterministic Policy Gradient (DDPG)
@@ -139,8 +139,18 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
             the current policy and value function.
 
     """
-    if use_gpu:
-        device = torch.device('cuda')
+    print(use_gpu)
+
+
+    cpu_num = 2 # 自动获取最大核心数目
+    os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+    os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+    os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+    os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+    os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+    torch.set_num_threads(cpu_num)
+
+    device = torch.device('cuda') if use_gpu else torch.device('cpu')
 
     logger = EpochLogger(logger_dir, model_name)
     logger.log_vars(locals())
@@ -159,10 +169,18 @@ def iqrdqn(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(),
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
-    if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
+    if env_name == 'Hopper-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 3
+    elif env_name == 'HalfCheetah-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
+    elif env_name == 'Walker2d-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[2,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 3
     elif env_name == 'Ant-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]

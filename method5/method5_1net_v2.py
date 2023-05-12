@@ -11,6 +11,8 @@ from utils import core
 from utils.logger import EpochLogger
 from utils.norm_check import get_inf_norm
 import warnings
+import os
+from multiprocessing import cpu_count
 
 
 warnings.filterwarnings('ignore')
@@ -142,6 +144,16 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             the current policy and value function.
 
     """
+    
+
+    cpu_num = 2 # 自动获取最大核心数目
+    os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+    os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+    os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+    os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+    os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+    torch.set_num_threads(cpu_num)
+
     if use_gpu:
         device = torch.device('cuda')
 
@@ -161,10 +173,18 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
 
-    if env_name == 'HalfCheetah-v4' or env_name == 'Walker2d-v4':
+    if env_name == 'Hopper-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 3
+    elif env_name == 'HalfCheetah-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[3,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 2
+    elif env_name == 'Walker2d-v4':
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[2,], dtype=np.float32)
+        act_dim_sgl = action_space_single.shape[0]
+        agent_num = 3
     elif env_name == 'Ant-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
