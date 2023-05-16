@@ -356,9 +356,23 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         a += noise_scale * np.random.randn(act_dim_sgl)
         return np.clip(a, -act_limit, act_limit)
 
+    def get_mean_quantile(idx, o, a):
+        with torch.no_grad():
+            o = torch.as_tensor(o, dtype=torch.float32)
+            a = torch.as_tensor(a, dtype=torch.float32)
+            if use_gpu:
+                o = o.to(torch.device('cuda'))
+                a = a.to(torch.device('cuda'))
+            z = ac[idx].z(o,a)
+            m = z.mean(dim=-1)
+            closest_idx = (torch.abs(z-m)).argmin()
+        return closest_idx.item()
+
     def test_agent():
         vals = np.ndarray([num_test_episodes], dtype=np.float64)
         lens = np.ndarray([num_test_episodes], dtype=np.int32)
+        mean_quantile = 0
+        counts = 0
         for j in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset()[0], False, 0, 0
             while not(d or (ep_len == max_ep_len)):
@@ -366,14 +380,18 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 action = []
                 for idx in range(agent_num):
                     action.append(get_action(idx, o, 0))
+                    mean_quantile += get_mean_quantile(idx,o,action[-1])
+                    counts += 1
                 action = np.concatenate(action, axis=-1)
                 o, r, d, _, _ = test_env.step(action)
                 ep_ret += r
                 ep_len += 1
             vals[j] = ep_ret
             lens[j] = ep_len
+        mean_quantile /= counts
         logger.store(test_avg_r=vals.mean(), test_std_r=vals.std())
         logger.store(test_avg_len=lens.mean())
+        logger.store(mean_corr_quantile=mean_quantile)
         
 
     # Prepare for interaction with environment
@@ -399,6 +417,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
             #print(a.shape)
 
         # Step the env
+    # Prepare for interaction with environment
         o2, r, d, _, info = env.step(a)
         if DEBUG:
             print("o:\n{}\na:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, a, o2, r, d, info))
