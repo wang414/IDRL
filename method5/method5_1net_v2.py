@@ -13,7 +13,21 @@ from utils.norm_check import get_inf_norm
 import warnings
 import os
 from multiprocessing import cpu_count
-
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--env', type=str, default='HalfCheetah-v4')
+parser.add_argument('--hid', type=int, default=256)
+parser.add_argument('--l', type=int, default=2)
+parser.add_argument('--gamma', type=float, default=0.99)
+parser.add_argument('--seed', '-s', type=int, default=0)
+parser.add_argument('--epochs', type=int, default=1500)
+parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
+parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
+parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
+parser.add_argument('--z_lr', type=float, default=1e-3)
+parser.add_argument('--pi_lr', type=float, default=1e-4)
+parser.add_argument('--test_opt', default=False, action='store_true')
+args = parser.parse_args()
 
 warnings.filterwarnings('ignore')
 
@@ -215,6 +229,134 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Count variables (protip: try to get a feel for how different size networks behave!)
     var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
     print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
+    class Test_opt:
+        def __init__(self):
+            self.ac = []
+            for _ in range(agent_num):
+                agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
+                if use_gpu:
+                    agent.cuda()
+                self.ac.append(agent)
+            self.ac_targ = deepcopy(ac)
+            self.pi_optimizers = []
+            self.q_optimizers = []
+            for i in range(agent_num):
+                self.pi_optimizers.append(Adam(ac[i].pi.parameters(), lr=pi_lr))
+                self.q_optimizers.append(Adam(ac[i].q.parameters(), lr=q_lr))
+            for agent in ac_targ:
+                for p in agent.parameters():
+                    p.requires_grad = False
+            self.env = env_fn()
+        
+        def get_action(self, idx, o, noise_scale):
+            o = torch.as_tensor(o, dtype=torch.float32)
+            if use_gpu:
+                o = o.to(torch.device('cuda'))
+            a = self.ac[idx].act(obs=o, use_gpu=use_gpu)
+            a += noise_scale * np.random.randn(act_dim_sgl)
+            return np.clip(a, -act_limit, act_limit)
+
+        def compute_loss_q(self, data, p_id=0):
+            o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
+
+            if use_gpu:
+                o = o.to(torch.device('cuda'))
+                a = a.to(torch.device('cuda'))
+                o2 = o2.to(torch.device('cuda'))
+                r = r.to(torch.device('cuda'))
+                d = d.to(torch.device('cuda'))
+            q = self.ac[p_id].q(o,a)
+
+            # Bellman backup for Q function
+            with torch.no_grad():
+                q_pi_targ = self.ac_targ[p_id].q(o2, self.ac_targ[p_id].pi(o2))
+                backup = r + gamma * (1 - d) * q_pi_targ
+
+            # MSE loss against Bellman backup
+            loss_q = ((q - backup)**2).mean()
+
+            return loss_q, q.detach().cpu().numpy()
+
+        # Set up function for computing DDPG pi loss
+        def compute_loss_pi(self, data, p_id=0):
+            o = data['obs']
+            if use_gpu:
+                o = o.to(torch.device('cuda'))
+            q_pi = self.ac[p_id].q(o, self.ac[p_id].pi(o))
+            return -q_pi.mean()
+
+        def update(self, data, p_id=0):
+            # First run one gradient descent step for Q.
+            self.q_optimizers[p_id].zero_grad()
+            loss_q, Q_vals = self.compute_loss_q(data, p_id)
+            loss_q.backward()
+            self.q_optimizers[p_id].step()
+
+            # Freeze Q-network so you don't waste computational effort 
+            # computing gradients for it during the policy learning step.
+            for p in ac[p_id].q.parameters():
+                p.requires_grad = False
+
+            # Next run one gradient descent step for pi.
+            self.pi_optimizers[p_id].zero_grad()
+            loss_pi = self.compute_loss_pi(data, p_id)
+            loss_pi.backward()
+            self.pi_optimizers[p_id].step()
+
+            # Unfreeze Q-network so you can optimize it at next DDPG step.
+            for p in self.ac[p_id].q.parameters():
+                p.requires_grad = True
+
+            # Finally, update target networks by polyak averaging.
+            with torch.no_grad():
+                for p, p_targ in zip(self.ac[p_id].parameters(), self.ac_targ[p_id].parameters()):
+                    # NB: We use an in-place operations "mul_", "add_" to update target
+                    # params, as opposed to "mul" and "add", which would make new tensors.
+                    p_targ.data.mul_(polyak)
+                    p_targ.data.add_((1 - polyak) * p.data)
+            
+            return loss_q.item(), loss_pi.item(), Q_vals.mean().item()
+
+        def train_agent(self, idx):
+            buffer = deepcopy(replay_buffer)
+            o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts =  self.env.reset()[0], 0, 0, 0, 0, 0, 0
+            for t in range(200000):
+                # Until start_steps have elapsed, randomly sample actions
+                # from a uniform distribution for better exploration. Afterwards, 
+                # use the learned policy (with some noise, via act_noise). 
+                # Step the env
+                a = []
+                for i in range(agent_num):
+                    a.append(self.get_action(i, o, act_noise))
+                a = np.concatenate(a, axis=-1)
+                o2, r, d, _, info = env.step(a)
+                ep_ret += r
+                ep_len += 1
+                # Ignore the "done" signal if it comes from hitting the time
+                # horizon (that is, when it's an artificial terminal signal
+                # that isn't based on the agent's state)
+                d = False if ep_len==max_ep_len else d
+                # Store experience to replay buffer
+                buffer.store(o, a, r, o2, d)
+                # Super critical, easy to overlook step: make sure to update 
+                # most recent observation!
+                o = o2
+                # End of trajectory handling
+                if d or (ep_len == max_ep_len):
+                    ep_rets.append(ep_ret)
+                    o, ep_ret, ep_len = self.env.reset()[0], 0, 0
+
+                # Update handling
+                if t % update_every == 0:
+                    for _ in range(update_every):
+                        if buffer.size < batch_size:
+                            break
+                        batch = buffer.sample_batch(idx, batch_size)
+                        lq, lp, qv = self.update(data=batch, p_id=idx)
+                        loss_q += lq
+                        loss_pi += lp
+                        q_vals += qv
+                        counts += 1
 
     
     def calculate_huber_loss(td_errors, kappa=1.0):
@@ -304,9 +446,11 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
     # Set up optimizers for policy and q-function
     pi_optimizers = []
     z_optimizers = []
+    q_optimizers = []
     for i in range(agent_num):
         pi_optimizers.append(Adam(ac[i].pi.parameters(), lr=pi_lr))
         z_optimizers.append(Adam(ac[i].z.parameters(), lr=z_lr))
+        q_optimizers.append(Adam(ac[i].q.parameters(), lr=z_lr))
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
@@ -348,6 +492,25 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
         return loss_pi.item(), pi_grad_norm
 
+    def test_opt_quantile():
+        idx = torch.randint(0, agent_num, (1,)).item()
+        test_opt_agent = Test_opt()
+        test_opt_agent.train_agent(idx)
+        batch = replay_buffer.sample_batch(idx, batch_size)
+        o, a = batch['obs'], batch['act']
+        if use_gpu:
+            o = o.to(torch.device('cuda'))
+            a = a.to(torch.device('cuda'))
+        z = ac[idx].z(o, a)
+        q = test_opt_agent.ac[idx].q(o, a)
+        # print(f"shapr z:{z.shape} shapre q{q.shape}")
+        print(z[0], q[0])
+        opt_closest_idx = (torch.abs(z-q.unsqueeze(-1))).argmin(dim = -1)
+        opt_closest_idx = opt_closest_idx.to(torch.float32).mean()
+        mean_closest_idx = (torch.abs(z-z.mean(dim=-1, keepdim=True))).argmin(dim = -1)
+        mean_closest_idx = mean_closest_idx.to(torch.float32).mean()
+        return opt_closest_idx.item(), mean_closest_idx.item()
+
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
         if use_gpu:
@@ -356,22 +519,9 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         a += noise_scale * np.random.randn(act_dim_sgl)
         return np.clip(a, -act_limit, act_limit)
 
-    def get_mean_quantile(idx, o, a):
-        with torch.no_grad():
-            o = torch.as_tensor(o, dtype=torch.float32)
-            a = torch.as_tensor(a, dtype=torch.float32)
-            if use_gpu:
-                o = o.to(torch.device('cuda'))
-                a = a.to(torch.device('cuda'))
-            z = ac[idx].z(o,a)
-            m = z.mean(dim=-1)
-            closest_idx = (torch.abs(z-m)).argmin()
-        return closest_idx.item()
-
     def test_agent():
         vals = np.ndarray([num_test_episodes], dtype=np.float64)
         lens = np.ndarray([num_test_episodes], dtype=np.int32)
-        mean_quantile = 0
         counts = 0
         for j in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset()[0], False, 0, 0
@@ -380,7 +530,6 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 action = []
                 for idx in range(agent_num):
                     action.append(get_action(idx, o, 0))
-                    mean_quantile += get_mean_quantile(idx,o,action[-1])
                     counts += 1
                 action = np.concatenate(action, axis=-1)
                 o, r, d, _, _ = test_env.step(action)
@@ -388,10 +537,13 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 ep_len += 1
             vals[j] = ep_ret
             lens[j] = ep_len
-        mean_quantile /= counts
         logger.store(test_avg_r=vals.mean(), test_std_r=vals.std())
         logger.store(test_avg_len=lens.mean())
-        logger.store(mean_corr_quantile=mean_quantile)
+        if args.test_opt:
+            opt_idx, mean_idx = test_opt_quantile()
+            logger.store(opt_idx=opt_idx)
+            logger.store(mean_idx=mean_idx)
+
         
 
     # Prepare for interaction with environment
@@ -480,22 +632,6 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
 
 if __name__ == '__main__':
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--env', type=str, default='HalfCheetah-v4')
-    parser.add_argument('--hid', type=int, default=256)
-    parser.add_argument('--l', type=int, default=2)
-    parser.add_argument('--gamma', type=float, default=0.99)
-    parser.add_argument('--seed', '-s', type=int, default=0)
-    parser.add_argument('--epochs', type=int, default=1500)
-    parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
-    parser.add_argument('--weight',type=float, default=0.5, help='weight of the element of ucb target')
-    parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
-    parser.add_argument('--z_lr', type=float, default=1e-3)
-    parser.add_argument('--pi_lr', type=float, default=1e-4)
-    args = parser.parse_args()
-
     exp_name= args.env + '_' + args.exp_name + '_ucb{}_weight{}'.format(args.ucb, args.weight)
 
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
