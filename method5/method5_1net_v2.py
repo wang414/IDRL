@@ -71,7 +71,7 @@ class ReplayBuffer:
 
 def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
           steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
-          polyak=0.995, pi_lr=1e-3, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
+          polyak=0.995, pi_lr=1e-3, q_lr=5e-5, z_lr=5e-5, batch_size=100, start_steps=10000,
           update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
           max_ep_len=1000, logger_dir='logs', model_name='method5', save_freq=1, kappa=1.0, N=200,
           ucb=85, weight=0.5):
@@ -320,14 +320,17 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         def train_agent(self, idx):
             buffer = deepcopy(replay_buffer)
             o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts =  self.env.reset()[0], 0, 0, 0, 0, 0, 0
-            for t in range(200000):
+            for t in range(20000):
                 # Until start_steps have elapsed, randomly sample actions
                 # from a uniform distribution for better exploration. Afterwards, 
                 # use the learned policy (with some noise, via act_noise). 
                 # Step the env
                 a = []
                 for i in range(agent_num):
-                    a.append(self.get_action(i, o, act_noise))
+                    if i == idx:
+                        a.append(self.get_action(i, o, act_noise))
+                    else:
+                        a.append(get_action(i, o, act_noise))
                 a = np.concatenate(a, axis=-1)
                 o2, r, d, _, info = env.step(a)
                 ep_ret += r
@@ -358,7 +361,8 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                         q_vals += qv
                         counts += 1
 
-    
+    opt_agent = Test_opt()
+
     def calculate_huber_loss(td_errors, kappa=1.0):
         return torch.where(
             td_errors.abs() <= kappa,
@@ -494,15 +498,14 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
 
     def test_opt_quantile():
         idx = torch.randint(0, agent_num, (1,)).item()
-        test_opt_agent = Test_opt()
-        test_opt_agent.train_agent(idx)
+        opt_agent.train_agent(idx)
         batch = replay_buffer.sample_batch(idx, batch_size)
         o, a = batch['obs'], batch['act']
         if use_gpu:
             o = o.to(torch.device('cuda'))
             a = a.to(torch.device('cuda'))
         z = ac[idx].z(o, a)
-        q = test_opt_agent.ac[idx].q(o, a)
+        q = opt_agent.ac[idx].q(o, a)
         # print(f"shapr z:{z.shape} shapre q{q.shape}")
         print(z[0], q[0])
         opt_closest_idx = (torch.abs(z-q.unsqueeze(-1))).argmin(dim = -1)
@@ -601,6 +604,7 @@ def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
                     lz, zv, zgn= update_z(idx, data=batch)
+                    opt_agent.update(batch, idx)
                     #print(zgn)
                     loss_z += lz
                     z_vals += zv
