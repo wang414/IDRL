@@ -7,11 +7,15 @@ from gym.spaces.box import Box
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
-from utils.logger import EpochLogger
 from utils import core
+from utils.logger import EpochLogger
+from utils.norm_check import get_inf_norm
 import warnings
-warnings.filterwarnings('ignore')
+import os
+from multiprocessing import cpu_count
 
+
+warnings.filterwarnings('ignore')
 
 DEBUG = False
 use_gpu = torch.cuda.is_available()
@@ -37,8 +41,8 @@ class ReplayBuffer:
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr+1) % self.max_size
-        self.size = min(self.size+1, self.max_size)
+        self.ptr = (self.ptr + 1) % self.max_size
+        self.size = min(self.size + 1, self.max_size)
 
     def sample_batch(self, idx, batch_size=32):
         idx = np.array([idx * self.act_dim_sgl + i for i in range(self.act_dim_sgl)])
@@ -51,12 +55,12 @@ class ReplayBuffer:
         return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
 
 
-def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
-         steps_per_epoch=4000, epochs=100, replay_size=int(1e6), gamma=0.99, 
-         polyak=0.995, pi_lr=1e-4, q_lr=1e-4, batch_size=100, start_steps=10000, 
-         update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10, 
-         max_ep_len=1000, logger_dir='logs', model_name='iddpg', 
-         save_freq=1):
+def method5(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), seed=0,
+          steps_per_epoch=4000, epochs=1500, replay_size=int(1e6), gamma=0.99,
+          polyak=0.995, pi_lr=1e-3, q_lr=1e-4, z_lr=5e-5, batch_size=100, start_steps=10000,
+          update_after=1000, update_every=50, act_noise=0.1, num_test_episodes=10,
+          max_ep_len=1000, logger_dir='logs', model_name='method5', save_freq=1, kappa=1.0, N=200,
+          ucb=85, weight_s=0.0, weight_e = 0.8):
     """
     Deep Deterministic Policy Gradient (DDPG)
 
@@ -65,16 +69,16 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
         env_fn : A function which creates a copy of the environment.
             The environment must satisfy the OpenAI Gym API.
 
-        actor_critic: The constructor method for a PyTorch Module with an ``act`` 
+        actor_critic: The constructor method for a PyTorch Module with an ``act``
             method, a ``pi`` module, and a ``q`` module. The ``act`` method and
             ``pi`` module should accept batches of observations as inputs,
-            and ``q`` should accept a batch of observations and a batch of 
+            and ``q`` should accept a batch of observations and a batch of
             actions as inputs. When called, these should return:
 
             ===========  ================  ======================================
             Call         Output Shape      Description
             ===========  ================  ======================================
-            ``act``      (batch, act_dim)  | Numpy array of actions for each 
+            ``act``      (batch, act_dim)  | Numpy array of actions for each
                                            | observation.
             ``pi``       (batch, act_dim)  | Tensor containing actions from policy
                                            | given observations.
@@ -84,12 +88,12 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
                                            | flatten this!)
             ===========  ================  ======================================
 
-        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object 
+        ac_kwargs (dict): Any kwargs appropriate for the ActorCritic object
             you provided to DDPG.
 
         seed (int): Seed for random number generators.
 
-        steps_per_epoch (int): Number of steps of interaction (state-action pairs) 
+        steps_per_epoch (int): Number of steps of interaction (state-action pairs)
             for the agent and the environment in each epoch.
 
         epochs (int): Number of epochs to run and train agent.
@@ -98,14 +102,14 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
 
         gamma (float): Discount factor. (Always between 0 and 1.)
 
-        polyak (float): Interpolation factor in polyak averaging for target 
-            networks. Target networks are updated towards main networks 
+        polyak (float): Interpolation factor in polyak averaging for target
+            networks. Target networks are updated towards main networks
             according to:
 
-            .. math:: \\theta_{\\text{targ}} \\leftarrow 
+            .. math:: \\theta_{\\text{targ}} \\leftarrow
                 \\rho \\theta_{\\text{targ}} + (1-\\rho) \\theta
 
-            where :math:`\\rho` is polyak. (Always between 0 and 1, usually 
+            where :math:`\\rho` is polyak. (Always between 0 and 1, usually
             close to 1.)
 
         pi_lr (float): Learning rate for policy.
@@ -122,11 +126,11 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             is full enough for useful updates.
 
         update_every (int): Number of env interactions that should elapse
-            between gradient descent updates. Note: Regardless of how long 
-            you wait between updates, the ratio of env steps to gradient steps 
+            between gradient descent updates. Note: Regardless of how long
+            you wait between updates, the ratio of env steps to gradient steps
             is locked to 1.
 
-        act_noise (float): Stddev for Gaussian exploration noise added to 
+        act_noise (float): Stddev for Gaussian exploration noise added to
             policy at training time. (At test time, no noise is added.)
 
         num_test_episodes (int): Number of episodes to test the deterministic
@@ -140,24 +144,35 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             the current policy and value function.
 
     """
+    weight = weight_s
+
+    cpu_num = 2 # 自动获取最大核心数目
+    os.environ ['OMP_NUM_THREADS'] = str(cpu_num)
+    os.environ ['OPENBLAS_NUM_THREADS'] = str(cpu_num)
+    os.environ ['MKL_NUM_THREADS'] = str(cpu_num)
+    os.environ ['VECLIB_MAXIMUM_THREADS'] = str(cpu_num)
+    os.environ ['NUMEXPR_NUM_THREADS'] = str(cpu_num)
+    torch.set_num_threads(cpu_num)
+
+    if use_gpu:
+        device = torch.device('cuda')
 
     logger = EpochLogger(logger_dir, model_name)
     logger.log_vars(locals())
 
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
 
     env, test_env = env_fn(), env_fn() 
-    
     obs_dim = env.observation_space.shape
     act_dim = env.action_space.shape[0]
-
+     # for special env ant
     # Action limit for clamping: critically, assumes all dimensions share the same bound!
     act_limit = env.action_space.high[0]
 
     # Create actor-critic module and target networks
     # ac = actor_critic(env.observation_space, env.action_space, **ac_kwargs)
+
     if env_name == 'Hopper-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
@@ -171,40 +186,73 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 3
     elif env_name == 'Ant-v4':
-        action_space_single = Box(low=-act_limit, high=act_limit, shape=[2,], dtype=np.float32)
+        action_space_single = Box(low=-act_limit, high=act_limit, shape=[4,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
-        agent_num = 4
+        agent_num = 2
     elif env_name == 'Humanoid-v4':
         action_space_single = Box(low=-act_limit, high=act_limit, shape=[1,], dtype=np.float32)
         act_dim_sgl = action_space_single.shape[0]
         agent_num = 17
-
     ac = []
+
     for _ in range(agent_num):
-        agent = actor_critic(env.observation_space, action_space_single, **ac_kwargs)
+        agent = actor_critic(env.observation_space, action_space_single, N, **ac_kwargs)
         if use_gpu:
             agent.cuda()
         ac.append(agent)
-    
     ac_targ = deepcopy(ac)
-
+    taus = torch.arange(
+            0, N+1, device=device, dtype=torch.float32) / N
+    tau_hats = ((taus[1:] + taus[:-1]) / 2.0).view(1, N)
+    ac_targ = deepcopy(ac)
     # Freeze target networks with respect to optimizers (only update via polyak averaging)
     for agent in ac_targ:
         for p in agent.parameters():
             p.requires_grad = False
-
     # Experience buffer
     replay_buffer = ReplayBuffer(obs_dim, act_dim, act_dim_sgl, replay_size)
 
     # Count variables (protip: try to get a feel for how different size networks behave!)
-    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].q])
+    var_counts = tuple(core.count_vars(module) for module in [ac[0].pi, ac[0].z])
     print('\nNumber of parameters for each agent: \t pi: %d, \t q: %d\n'%var_counts)
 
+    
+    def calculate_huber_loss(td_errors, kappa=1.0):
+        return torch.where(
+            td_errors.abs() <= kappa,
+            0.5 * td_errors.pow(2),
+            kappa * (td_errors.abs() - 0.5 * kappa))
+
+
+    def calculate_quantile_huber_loss(td_errors):
+        assert not taus.requires_grad
+        batch_size, N, N_dash = td_errors.shape
+
+        # Calculate huber loss element-wisely.
+        element_wise_huber_loss = calculate_huber_loss(td_errors, kappa)
+        assert element_wise_huber_loss.shape == (
+            batch_size, N, N_dash)
+
+        # Calculate quantile huber loss element-wisely.
+        element_wise_quantile_huber_loss = torch.abs(
+            tau_hats[..., None] - (td_errors.detach() < 0).float()
+            ) * element_wise_huber_loss / kappa
+        assert element_wise_quantile_huber_loss.shape == (
+            batch_size, N, N_dash)
+
+        # Quantile huber loss.
+        batch_quantile_huber_loss = element_wise_quantile_huber_loss.sum(
+            dim=1).mean(dim=1, keepdim=True)
+        assert batch_quantile_huber_loss.shape == (batch_size, 1)
+
+        quantile_huber_loss = batch_quantile_huber_loss.mean()
+
+        return quantile_huber_loss
+    
 
     # Set up function for computing DDPG Q-loss
-    def compute_loss_q(idx, data):
+    def compute_loss_z(idx, data):
         o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
-
         if use_gpu:
             o = o.to(torch.device('cuda'))
             a = a.to(torch.device('cuda'))
@@ -212,65 +260,65 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             r = r.to(torch.device('cuda'))
             d = d.to(torch.device('cuda'))
 
-        q = ac[idx].q(o,a)
+        # Calculate quantile values of current states and actions at taus.
+        current_sa_quantiles = ac[idx].z(o, a)
+        q = current_sa_quantiles.mean(dim=-1)
+        current_sa_quantiles = current_sa_quantiles.unsqueeze(dim=-1)
+        assert current_sa_quantiles.shape == (batch_size, N, 1)
 
-
-        # Bellman backup for Q function
         with torch.no_grad():
+            # Calculate quantile values of next states and actions at tau_hats.
+            next_sa_quantiles = ac_targ[idx].z(o2, ac[idx].pi(o2)).unsqueeze(dim=-1).transpose(1, 2)
+            assert next_sa_quantiles.shape == (batch_size, 1, N)
 
-            q_pi_targ = ac_targ[idx].q(o2, ac_targ[idx].pi(o2))
-            backup = r + gamma * (1 - d) * q_pi_targ
+            # Calculate target quantile values.
+            target_sa_quantiles = r.view(batch_size,1,1) + (
+                1.0 - d.view(batch_size,1,1)) * gamma * next_sa_quantiles
+            # print(target_sa_quantiles.shape)
+            assert target_sa_quantiles.shape == (batch_size, 1, N)
 
-        # MSE loss against Bellman backup
-        loss_q = ((q - backup)**2).mean()
+        td_errors = target_sa_quantiles - current_sa_quantiles
+        assert td_errors.shape == (batch_size, N, N)
 
-        # Useful info for logging
+        quantile_huber_loss = calculate_quantile_huber_loss(td_errors)
+
         if use_gpu:
-            logs = q.cpu().detach().numpy()
+            logs = q.cpu().detach().numpy().mean()
         else:
-            logs = q.detach().numpy()
+            logs = q.detach().numpy().mean()
+        return quantile_huber_loss, logs
 
-        return loss_q, logs
+    selected_idxs = torch.ones([batch_size,1], device=torch.device('cuda'), dtype=torch.int32) *\
+           (torch.arange(9, device=torch.device('cuda')).reshape(1, -1) + -4 + ucb*2).clip(0, 199)
 
-    # Set up function for computing DDPG pi loss
+
     def compute_loss_pi(idx, data):
         o = data['obs']
         if use_gpu:
             o = o.to(torch.device('cuda'))
-        q_pi = ac[idx].q(o, ac[idx].pi(o))
+        z = ac[idx].z(o, ac[idx].pi(o))
+        qtls = torch.gather(z, 1, selected_idxs)
+        q_pi = (1-weight) * z.mean(dim=-1) + weight * qtls.mean(dim=-1)
         return -q_pi.mean()
 
     # Set up optimizers for policy and q-function
     pi_optimizers = []
-    q_optimizers = []
+    z_optimizers = []
     for i in range(agent_num):
         pi_optimizers.append(Adam(ac[i].pi.parameters(), lr=pi_lr))
-        q_optimizers.append(Adam(ac[i].q.parameters(), lr=q_lr))
+        z_optimizers.append(Adam(ac[i].z.parameters(), lr=z_lr))
 
     # Set up model saving
     logger.setup_pytorch_saver(ac)
 
-    def update(idx, data):
-        # First run one gradient descent step for Q.
-        q_optimizers[idx].zero_grad()
-        loss_q, Q_vals = compute_loss_q(idx, data)
-        loss_q.backward()
-        q_optimizers[idx].step()
-
-        # Freeze Q-network so you don't waste computational effort 
-        # computing gradients for it during the policy learning step.
-        for p in ac[idx].q.parameters():
-            p.requires_grad = False
-
-        # Next run one gradient descent step for pi.
-        pi_optimizers[idx].zero_grad()
-        loss_pi = compute_loss_pi(idx, data)
-        loss_pi.backward()
-        pi_optimizers[idx].step()
-
-        # Unfreeze Q-network so you can optimize it at next DDPG step.
-        for p in ac[idx].q.parameters():
-            p.requires_grad = True
+    def update_z(idx, data):
+        # First run one gradient descent step for Z.
+        z_optimizers[idx].zero_grad()
+        loss_z, loss_info_z = compute_loss_z(idx, data)
+        loss_z.backward()
+        z_grad_norm = get_inf_norm(ac[idx].z.parameters())
+        torch.nn.utils.clip_grad_norm_(ac[idx].z.parameters(), max_norm=20.0, norm_type=2)
+        z_optimizers[idx].step()
 
         # Finally, update target networks by polyak averaging.
         with torch.no_grad():
@@ -279,7 +327,26 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
                 # params, as opposed to "mul" and "add", which would make new tensors.
                 p_targ.data.mul_(polyak)
                 p_targ.data.add_((1 - polyak) * p.data)
-        return loss_q.item(), loss_pi.item(), Q_vals.mean().item()
+        return loss_z.item(), loss_info_z, z_grad_norm
+
+    def update_pi(idx, data):
+        # Freeze Q-network so you don't waste computational effort
+        # computing gradients for it during the policy learning step.
+        for p in ac[idx].z.parameters():
+            p.requires_grad = False
+
+        # Next run one gradient descent step for pi.
+        pi_optimizers[idx].zero_grad()
+        loss_pi = compute_loss_pi(idx, data)
+        loss_pi.backward()
+        pi_grad_norm = get_inf_norm(ac[idx].pi.parameters())
+        pi_optimizers[idx].step()
+
+        # Unfreeze Q-network so you can optimize it at next DDPG step.
+        for p in ac[idx].z.parameters():
+            p.requires_grad = True
+
+        return loss_pi.item(), pi_grad_norm
 
     def get_action(idx, o, noise_scale):
         o = torch.as_tensor(o, dtype=torch.float32)
@@ -289,9 +356,23 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
         a += noise_scale * np.random.randn(act_dim_sgl)
         return np.clip(a, -act_limit, act_limit)
 
+    def get_mean_quantile(idx, o, a):
+        with torch.no_grad():
+            o = torch.as_tensor(o, dtype=torch.float32)
+            a = torch.as_tensor(a, dtype=torch.float32)
+            if use_gpu:
+                o = o.to(torch.device('cuda'))
+                a = a.to(torch.device('cuda'))
+            z = ac[idx].z(o,a)
+            m = z.mean(dim=-1)
+            closest_idx = (torch.abs(z-m)).argmin()
+        return closest_idx.item()
+
     def test_agent():
         vals = np.ndarray([num_test_episodes], dtype=np.float64)
         lens = np.ndarray([num_test_episodes], dtype=np.int32)
+        mean_quantile = 0
+        counts = 0
         for j in range(num_test_episodes):
             o, d, ep_ret, ep_len = test_env.reset()[0], False, 0, 0
             while not(d or (ep_len == max_ep_len)):
@@ -299,28 +380,33 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
                 action = []
                 for idx in range(agent_num):
                     action.append(get_action(idx, o, 0))
+                    mean_quantile += get_mean_quantile(idx,o,action[-1])
+                    counts += 1
                 action = np.concatenate(action, axis=-1)
                 o, r, d, _, _ = test_env.step(action)
                 ep_ret += r
                 ep_len += 1
             vals[j] = ep_ret
             lens[j] = ep_len
-            # print(vals[j])
+        mean_quantile /= counts
         logger.store(test_avg_r=vals.mean(), test_std_r=vals.std())
         logger.store(test_avg_len=lens.mean())
+        logger.store(mean_corr_quantile=mean_quantile)
+        
+
     # Prepare for interaction with environment
     total_steps = steps_per_epoch * epochs
-
     # print(env.reset())
-    o, ep_ret, ep_len, loss_q, loss_pi, q_vals, counts =  env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0
+    o, ep_ret, ep_len, loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
+         env.reset(seed=seed)[0], 0, 0, 0, 0, 0, 0, 0, 0
     ep_rets = []
     test_env.reset(seed=np.random.randint(100))
     # Main loop: collect experience in env and update/log each epoch
     for t in range(total_steps):
-        
+
         # Until start_steps have elapsed, randomly sample actions
-        # from a uniform distribution for better exploration. Afterwards, 
-        # use the learned policy (with some noise, via act_noise). 
+        # from a uniform distribution for better exploration. Afterwards,
+        # use the learned policy (with some noise, via act_noise).
         if t > start_steps:
             a = []
             for idx in range(agent_num):
@@ -328,23 +414,25 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             a = np.concatenate(a, axis=-1)
         else:
             a = np.random.uniform(-act_limit, act_limit, act_dim)
+            #print(a.shape)
 
         # Step the env
+    # Prepare for interaction with environment
         o2, r, d, _, info = env.step(a)
         if DEBUG:
-            print("o:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, o2, r, d, info))
-        ep_ret += r
+            print("o:\n{}\na:\n{}\no2:\n{}\nr:\n{}\ndone:\n{}\ninfo:\n{}".format(o, a, o2, r, d, info))
         ep_len += 1
+        ep_ret += r
 
         # Ignore the "done" signal if it comes from hitting the time
         # horizon (that is, when it's an artificial terminal signal
         # that isn't based on the agent's state)
-        d = False if ep_len==max_ep_len else d
+        d = False if ep_len == max_ep_len else d
 
         # Store experience to replay buffer
         replay_buffer.store(o, a, r, o2, d)
 
-        # Super critical, easy to overlook step: make sure to update 
+        # Super critical, easy to overlook step: make sure to update
         # most recent observation!
         o = o2
 
@@ -355,30 +443,41 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
             o, ep_ret, ep_len = env.reset()[0], 0, 0
             
 
+        # Increase weight
+        if t >= 5e5 and weight < weight_e:
+            weight = (weight_e-weight_s) * (t - 5e5) / (total_steps//2 - 5e5)
+
         # Update handling
         if t >= update_after and t % update_every == 0:
             for _ in range(update_every):
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
-                    lq, lp, qv = update(idx, data=batch)
-                    loss_q += lq
-                    loss_pi += lp
-                    q_vals += qv
+                    lz, zv, zgn= update_z(idx, data=batch)
+                    #print(zgn)
+                    loss_z += lz
+                    z_vals += zv
+                    z_grad += zgn
                     counts += 1
+            for _ in range(update_every):
+                for idx in range(agent_num):
+                    batch = replay_buffer.sample_batch(idx, batch_size)
+                    lp , pig= update_pi(idx, data=batch)
+                    loss_pi += lp
+                    pi_grad += pig
 
         # End of epoch handling
-        if (t+1) % steps_per_epoch == 0:
-            epoch = (t+1) // steps_per_epoch
-
+        if (t + 1) % steps_per_epoch == 0:
+            epoch = (t + 1) // steps_per_epoch
             train_ret = np.array(ep_rets)
             ep_rets = []
             logger.store(Epoch=epoch)
             logger.store(train_avg_r=train_ret.mean(), train_std_r=train_ret.std())
             test_agent()
-            logger.store(loss_Q = loss_q/counts, loss_Pi = loss_pi/counts, Q=q_vals/counts)
             # Test the performance of the deterministic version of the agent.
-            loss_q, loss_pi, q_vals, counts = 0, 0, 0, 0
-            
+            logger.store(loss_Z = loss_z/counts, loss_Pi = loss_pi/counts, 
+            Z_vals = z_vals/counts, z_grad_norm = z_grad/counts, pi_grad_norm=pi_grad/counts)
+            loss_z, loss_pi, z_vals, counts, z_grad, pi_grad = \
+                0, 0, 0, 0, 0, 0
 
             # Log info about epoch
             logger.logging()
@@ -386,21 +485,28 @@ def iddpg(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict(), 
 
 if __name__ == '__main__':
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--env', type=str, default='HalfCheetah-v4')
     parser.add_argument('--hid', type=int, default=256)
     parser.add_argument('--l', type=int, default=2)
     parser.add_argument('--gamma', type=float, default=0.99)
     parser.add_argument('--seed', '-s', type=int, default=0)
-    parser.add_argument('--epochs', type=int, default=500)
-    parser.add_argument('--exp_name', type=str, default='iddpg')
-    parser.add_argument('--q_lr', type=float, default=1e-4)
+    parser.add_argument('--epochs', type=int, default=1500)
+    parser.add_argument('--ucb',type=int, default=85, help='upper quantile as the pi tartget, please make sure the value is bounded in 100')
+    parser.add_argument('--weight_s',type=float, default=0.0, help='start weight of the element of ucb target')
+    parser.add_argument('--weight_e',type=float, default=0.8, help='end weight of the element of ucb target')
+    parser.add_argument('--exp_name', type=str, default='1net_v2_round_update')
+    parser.add_argument('--z_lr', type=float, default=1e-3)
+    parser.add_argument('--pi_lr', type=float, default=1e-4)
     args = parser.parse_args()
 
-    exp_name= args.env + '_' + args.exp_name
+    exp_name= args.env + '_' + args.exp_name + '_ucb{}_weights{}_weight_e{}'.format(args.ucb, args.weight_s, args.weight_e)
+
     logger_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
-    iddpg(lambda : gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
-         ac_kwargs=dict(hidden_sizes=[args.hid]*args.l), 
-         gamma=args.gamma, seed=args.seed, epochs=args.epochs,
-         logger_dir=logger_dir, model_name=exp_name, q_lr=args.q_lr)
+
+    method5(lambda: gym.make(args.env), args.env, actor_critic=core.MLPActorCritic,
+          ac_kwargs=dict(hidden_sizes=[args.hid] * args.l),
+          gamma=args.gamma, seed=args.seed, epochs=args.epochs,
+          logger_dir=logger_dir, model_name=exp_name, ucb=args.ucb, weight_s=args.weight_s, weight_e=args.weight_e, z_lr=args.z_lr, pi_lr=args.pi_lr)

@@ -438,6 +438,7 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         # Update handling
         if t >= update_after and t % update_every == 0:
             for _ in range(update_every):
+                calculate_opt_interval += 1
                 for idx in range(agent_num):
                     batch = replay_buffer.sample_batch(idx, batch_size)
                     lq, lz, lp, qv, zv= update(idx, data=batch)
@@ -451,7 +452,6 @@ def method4(env_fn, env_name, actor_critic=core.MLPActorCritic, ac_kwargs=dict()
         # End of epoch handling
         if (t + 1) % steps_per_epoch == 0:
             epoch = (t + 1) // steps_per_epoch
-
             train_ret = np.array(ep_rets)
             ep_rets = []
             logger.store(Epoch=epoch)
